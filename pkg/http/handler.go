@@ -3,8 +3,8 @@ package http
 import (
 	"net/http"
 
-	"github.com/evo-cloud/logs"
 	logspb "github.com/evo-cloud/logs/pkg/gen/proto/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 // B3 HTTP headers.

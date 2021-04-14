@@ -3,7 +3,7 @@ package http
 import (
 	"net/http"
 
-	"github.com/evo-cloud/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 // TraceRoundTripper implements http.RoundTripper and logs the request/response.

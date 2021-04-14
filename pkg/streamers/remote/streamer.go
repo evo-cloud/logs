@@ -7,8 +7,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/evo-cloud/logs"
 	logspb "github.com/evo-cloud/logs/pkg/gen/proto/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 const (

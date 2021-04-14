@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/evo-cloud/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 // UpdateRequest injects span information into request header.

@@ -15,8 +15,8 @@ import (
 	"github.com/golang/glog"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/evo-cloud/logs"
 	logspb "github.com/evo-cloud/logs/pkg/gen/proto/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 const (

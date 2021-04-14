@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
-	"github.com/evo-cloud/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 // SpanInfoInjector injects SpanInfo into gRPC metadata.

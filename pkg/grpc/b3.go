@@ -4,8 +4,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 
-	"github.com/evo-cloud/logs"
 	logspb "github.com/evo-cloud/logs/pkg/gen/proto/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 // B3 metadata keys for SpanInfo.

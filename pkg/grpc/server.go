@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/evo-cloud/logs"
+	"github.com/evo-cloud/logs/pkg/logs"
 )
 
 // SpanInfoExtractor extracts SpanInfo from RPC.
