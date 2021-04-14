@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package logs;
+
+option go_package = "github.com/evo-cloud/logs/pkg/gen/proto/logs";
+
+message LogEntry {
+    enum Level {
+        NONE = 0;
+        INFO = 1;
+        WARNING = 2;
+        ERROR = 3;
+        CRITICAL = 4;
+        FATAL = 5;
+    }
+
+    int64 nano_ts = 1;
+    Trace trace = 2;
+    Level level = 3;
+    string location = 4;
+    string message = 5;
+    map<string, Value> attributes = 6;
+}
+
+message Trace {
+    message SpanStart {
+        string name = 1;
+        Span.Kind kind = 2;
+        repeated Link links = 3;
+    }
+
+    message SpanEnd {
+    }
+
+    SpanContext span_context = 1;
+    oneof event {
+        SpanStart span_start = 2;
+        SpanEnd span_end = 3;
+    }
+}
+
+message Value {
+    oneof value {
+        bool bool_value = 1;
+        int64 int_value = 2;
+        float float_value = 3;
+        double double_value = 4;
+        string str_value = 5;
+        string json = 6;
+        bytes proto = 7;
+    }
+}
+
+message SpanContext {
+    // 16-byte (128-bit) trace ID.
+    bytes trace_id = 1;
+    // 8-byte (64-bit) span ID.
+    uint64 span_id = 2;
+}
+
+message Span {
+    enum Kind {
+        UNSPECIFIED = 0;
+        INTERNAL = 1;
+        SERVER = 2;
+        CLIENT = 3;
+        PRODUCER = 4;
+        CONSUMER = 5;
+    }
+
+    SpanContext context = 1;
+    string name = 2;
+    Kind kind = 3;
+    int64 start_ns = 4;
+    int64 duration = 5;
+    map<string, Value> attributes = 6;
+    repeated Link links = 7;
+    repeated LogEntry logs = 8;
+}
+
+message Link {
+    enum Type {
+        CHILD_OF = 0;
+        FOLLOW = 1;
+    }
+    SpanContext span_context = 1;
+    Type type = 2;
+    map<string, Value> attributes = 3;
+}
+

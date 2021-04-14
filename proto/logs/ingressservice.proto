@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package logs;
+
+option go_package = "github.com/evo-cloud/logs/pkg/gen/proto/logs";
+
+import "logs/log.proto";
+
+message IngressBatch {
+    repeated LogEntry entries = 1;
+    bool chunk_end = 2;
+}
+
+message IngressEvent {
+    int64 last_nano_ts = 1;
+}
+
+service IngressService {
+    rpc IngressStream(stream IngressBatch) returns (stream IngressEvent);
+}
