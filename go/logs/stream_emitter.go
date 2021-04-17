@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/golang/glog"
-
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
 )
 
@@ -81,6 +79,6 @@ func (e *StreamEmitter) emitEntries(ctx context.Context) {
 	}
 
 	if err := e.Streamer.StreamLogEntries(ctx, entries); err != nil {
-		glog.Errorf("Stream log entries error: %v", err)
+		Emergent().Error(err).PrintErr("Stream: ")
 	}
 }

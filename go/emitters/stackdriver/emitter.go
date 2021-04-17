@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"cloud.google.com/go/compute/metadata"
-	"github.com/golang/glog"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
@@ -92,7 +91,7 @@ func (e *JSONEmitter) EmitLogEntry(entry *logspb.LogEntry) {
 	}
 	out, err := json.Marshal(payload)
 	if err != nil {
-		glog.Errorf("Marshal LogEntry (nano_ts=%d) error: %v", entry.GetNanoTs(), err)
+		logs.Emergent().Error(err).PrintErrf("Marshal (nano_ts=%d): ", entry.GetNanoTs())
 		return
 	}
 	fmt.Fprintln(e.Out, string(out))

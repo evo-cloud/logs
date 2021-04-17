@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang/glog"
 	jaegerpb "github.com/jaegertracing/jaeger/model"
 	jaegerapi "github.com/jaegertracing/jaeger/proto-gen/api_v2"
 	"google.golang.org/grpc"
@@ -60,12 +59,11 @@ func (r *Reporter) StartStreamInChunk(ctx context.Context, info logs.ChunkInfo) 
 // StreamLogEntry implements logs.ChunkedLogStreamer.
 func (s *batchStreamer) StreamLogEntry(ctx context.Context, entry *logspb.LogEntry) error {
 	s.lastNanoTS = entry.NanoTs
-	glog.V(2).Infof("Jaeger: Recv LogEntry @%d %s", entry.NanoTs, logs.IDStringFrom(entry.GetTrace().GetSpanContext()))
 	span := s.reporter.assembler.AddLogEntry(entry)
 	if span != nil {
 		tid, sid, err := parseIDs(span.GetContext())
 		if err != nil {
-			glog.Errorf("Jaeger: invalid TraceID or SpanID: %v", err)
+			logs.Emergent().Error(err).PrintErr("Jaeger: invalid TraceID or SpanID: ")
 			return nil
 		}
 		jspan := &jaegerpb.Span{
@@ -124,7 +122,6 @@ func (s *batchStreamer) StreamLogEntry(ctx context.Context, entry *logspb.LogEnt
 			jspan.Logs = append(jspan.Logs, l)
 		}
 		s.batch.Spans = append(s.batch.Spans, jspan)
-		glog.V(2).Infof("Jaeger: Add span %s[%s]", span.GetName(), logs.IDStringFrom(span.GetContext()))
 	}
 	return nil
 }
@@ -132,10 +129,9 @@ func (s *batchStreamer) StreamLogEntry(ctx context.Context, entry *logspb.LogEnt
 // StreamEnd implements logs.ChunkedLogStreamer.
 func (s *batchStreamer) StreamEnd(ctx context.Context) (int64, error) {
 	if len(s.batch.Spans) > 0 {
-		glog.V(2).Infof("Jaeger: Post %d spans", len(s.batch.Spans))
 		client := jaegerapi.NewCollectorServiceClient(s.reporter.conn)
 		if _, err := client.PostSpans(ctx, &jaegerapi.PostSpansRequest{Batch: s.batch}); err != nil {
-			glog.Errorf("PostSpans error: %v", err)
+			logs.Emergent().Error(err).PrintErr("Post: ")
 		}
 	}
 	return s.lastNanoTS, nil

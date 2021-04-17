@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/glog"
 	"google.golang.org/protobuf/proto"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
@@ -97,7 +96,7 @@ func (e *ChunkedEmitter) EmitLogEntry(entry *logspb.LogEntry) {
 		e.last = nil
 	}
 	if lostSize > 0 {
-		glog.Errorf("Overrun %d bytes of records", lostSize)
+		Emergent().Errorf("Overrun %d bytes of records", lostSize)
 	}
 	select {
 	case e.emitCh <- struct{}{}:
@@ -131,17 +130,17 @@ func (e *ChunkedEmitter) emitChunks(ctx context.Context) {
 	var lastTS int64
 	rs, err := e.Streamer.StartStreamInChunk(ctx, *info)
 	if err != nil {
-		glog.Errorf("StartStreamChunk error: %v", err)
+		Emergent().Error(err).PrintErr("StartStreamChunk: ")
 	} else {
 		for rec := head; rec != nil; rec = rec.next {
 			if err := rs.StreamLogEntry(ctx, rec.entry); err != nil {
-				glog.Errorf("StreamRecord(%v) error: %v", rec.entry.GetNanoTs(), err)
+				Emergent().Error(err).PrintErrf("StreamRecord(%v): ", rec.entry.GetNanoTs())
 				break
 			}
 		}
 		lastTS, err = rs.StreamEnd(ctx)
 		if err != nil {
-			glog.Errorf("StreamEnd() error: %v", err)
+			Emergent().Error(err).PrintErr("StreamEnd: ")
 		}
 	}
 
@@ -171,7 +170,7 @@ func (e *ChunkedEmitter) emitChunks(ctx context.Context) {
 		returnedSize = totalSize - e.totalSize
 		e.totalSize = totalSize
 	}
-	glog.Errorf("Returned %d bytes, discarded %d bytes", returnedSize, lostSize)
+	Emergent().Errorf("Returned %d bytes, discarded %d bytes", returnedSize, lostSize)
 }
 
 func (e *ChunkedEmitter) fetchChunk() (*record, *record, *ChunkInfo) {

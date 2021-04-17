@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
@@ -63,7 +62,6 @@ func (s *Streamer) StreamLogEntries(ctx context.Context, entries []*logspb.LogEn
 	}
 	if s.traceAPI {
 		str := payload.String()
-		glog.Infof("ES bulk:\n%s", str)
 		payload = bytes.NewBufferString(str)
 	}
 	return s.bulk(payload)
@@ -118,7 +116,7 @@ func (s *Streamer) bulk(payload io.Reader) error {
 		json.Unmarshal(data, &reply)
 	}
 	if s.traceAPI {
-		glog.Infof("ES bulk reply:\n%s", string(replyJSON))
+		logs.Emergent().Infof("ES bulk reply:\n%s", string(replyJSON))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bulk error: %d %s", resp.StatusCode, replyJSON)
@@ -177,7 +175,7 @@ func (s *stream) flush() {
 	err := s.streamer.bulk(&s.payload)
 	s.payload.Reset()
 	if err != nil {
-		glog.Errorf("ElasticSearch bulk: %v", err)
+		logs.Emergent().Error(err).PrintErr("Bulk: ")
 	} else if encodedLastNanoTS > s.lastNanoTS {
 		s.lastNanoTS = encodedLastNanoTS
 	}

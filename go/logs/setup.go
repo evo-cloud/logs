@@ -1,11 +1,14 @@
 package logs
 
 import (
+	"os"
+
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
 )
 
 var (
-	defaultLogger = newLogger(&DummyEmitter{})
+	defaultLogger  = newLogger(&DummyEmitter{})
+	emergentLogger = newLogger(&EmergentEmitter{Out: os.Stderr})
 )
 
 // DummyEmitter discards log entries sliently.
@@ -19,6 +22,11 @@ func (e *DummyEmitter) EmitLogEntry(*logspb.LogEntry) {
 // Default returns the default logger.
 func Default() *Logger {
 	return defaultLogger
+}
+
+// Emergent returns the emergent logger.
+func Emergent() *Logger {
+	return emergentLogger
 }
 
 // Setup sets up the default logger.
