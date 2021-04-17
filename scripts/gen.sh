@@ -7,7 +7,7 @@ TOP_DIR="$(cd ${BASH_SOURCE[0]%/*}/..; pwd)"
 }
 
 PROTO_SRC_DIR="$TOP_DIR/proto"
-PROTO_GEN_DIR="$TOP_DIR/pkg/gen/proto"
+PROTO_GEN_DIR="$TOP_DIR/go/gen/proto"
 
 rm -fr "$PROTO_GEN_DIR"
 mkdir -p "$PROTO_GEN_DIR"

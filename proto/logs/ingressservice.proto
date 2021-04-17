@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package logs;
 
-option go_package = "github.com/evo-cloud/logs/pkg/gen/proto/logs";
+option go_package = "github.com/evo-cloud/logs/go/gen/proto/logs";
 
 import "logs/log.proto";
 
