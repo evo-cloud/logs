@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+jobs:
+  build:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Set up Go
+      id: go
+      uses: actions/setup-go@v2
+      with:
+        go-version: ^1.16
+
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build
+      run: |
+        mkdir -p _local/bin
+        cd go
+        CGO_ENABLED=0 go build -o ../_local/bin/logs ./cmd/logs/
+      shell: bash
+
+    - name: Release
+      run: |
+        set -x
+        tag_name="${GITHUB_REF##*/}"
+        tar -C _local/bin -czf "$(pwd)/_local/logs-linux.tar.gz" --owner=0 --group=0 logs
+        hub release create -a _local/logs-linux.tar.gz -m "$tag_name" "$tag_name"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
