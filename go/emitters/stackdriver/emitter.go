@@ -15,6 +15,10 @@ import (
 	"github.com/evo-cloud/logs/go/logs"
 )
 
+const (
+	DefaultMaxValueSize = 8192 // 8K.
+)
+
 var (
 	// ErrUnknownProjectID indicate project ID is not provided and can't be determined.
 	ErrUnknownProjectID = errors.New("unknown GCP project id")
@@ -50,6 +54,9 @@ type Timestamp struct {
 type JSONEmitter struct {
 	Out       io.Writer
 	ProjectID string
+	MinLevel  logspb.LogEntry_Level
+	// MaxValueSize applies to the value of a single attribute or the message.
+	MaxValueSize int
 }
 
 // NewJSONEmitter creates a JSONEmitter.
@@ -64,17 +71,26 @@ func NewJSONEmitter(out io.Writer, projectID string) (*JSONEmitter, error) {
 		}
 		projectID = id
 	}
-	return &JSONEmitter{Out: out, ProjectID: projectID}, nil
+	return &JSONEmitter{Out: out, ProjectID: projectID, MaxValueSize: DefaultMaxValueSize}, nil
 }
 
 // EmitLogEntry implements LogEmitter.
 func (e *JSONEmitter) EmitLogEntry(entry *logspb.LogEntry) {
+	if entry.GetLevel() < e.MinLevel {
+		return
+	}
 	payload := &JSONPayload{
 		Timestamp: timestampFromNanos(entry.GetNanoTs()),
 		Severity:  severityFromLevel(entry.GetLevel()),
 		Message:   entry.GetMessage(),
-		Labels:    labelsFromAttributes(entry.GetAttributes()),
+		Labels:    labelsFromAttributes(entry.GetAttributes(), e.MaxValueSize),
 		Raw:       json.RawMessage(protojson.MarshalOptions{UseProtoNames: true}.Format(entry)),
+	}
+	if sz := len(payload.Message); e.MaxValueSize > 0 && sz > e.MaxValueSize {
+		payload.Message = payload.Message[:e.MaxValueSize] + "...<truncated>"
+	}
+	if sz := len(payload.Raw); e.MaxValueSize > 0 && sz > e.MaxValueSize {
+		payload.Raw = json.RawMessage("<truncated>")
 	}
 	loc := strings.SplitN(entry.GetLocation(), ":", 2)
 	if len(loc) > 1 {
@@ -120,7 +136,7 @@ func severityFromLevel(level logspb.LogEntry_Level) string {
 	return "DEFAULT"
 }
 
-func labelsFromAttributes(attrs map[string]*logspb.Value) map[string]interface{} {
+func labelsFromAttributes(attrs map[string]*logspb.Value, maxValueSize int) map[string]interface{} {
 	if len(attrs) == 0 {
 		return nil
 	}
@@ -138,9 +154,17 @@ func labelsFromAttributes(attrs map[string]*logspb.Value) map[string]interface{}
 		case *logspb.Value_StrValue:
 			labels[key] = v.StrValue
 		case *logspb.Value_Json:
-			labels[key] = json.RawMessage(v.Json)
+			if sz := len(v.Json); maxValueSize > 0 && sz > maxValueSize {
+				labels[key] = "json:<too long...>"
+			} else {
+				labels[key] = json.RawMessage(v.Json)
+			}
 		case *logspb.Value_Proto:
-			labels[key] = v.Proto
+			if sz := len(v.Proto); maxValueSize > 0 && sz > maxValueSize {
+				labels[key] = "pb:<too long...>"
+			} else {
+				labels[key] = v.Proto
+			}
 		default:
 			continue
 		}

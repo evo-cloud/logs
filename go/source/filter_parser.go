@@ -9,6 +9,7 @@ import (
 	"github.com/jinzhu/now"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
+	"github.com/evo-cloud/logs/go/logs"
 )
 
 // ParseFilters parses a list of filters in strings into LogEntryFilters.
@@ -52,7 +53,7 @@ func ParseFilter(str string) (LogEntryFilter, error) {
 		}
 		return FilterBefore(t), nil
 	case "l", "lv", "level":
-		level, err := parseLevel(val)
+		level, err := logs.ParseLevel(val)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +77,7 @@ func ParseFilter(str string) (LogEntryFilter, error) {
 		return nil, nil
 
 	default:
-		return nil, fmt.Errorf("Unknown filter: %s", str)
+		return nil, fmt.Errorf("unknown filter: %s", str)
 	}
 }
 
@@ -90,24 +91,4 @@ func parseTime(str string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return t, nil
-}
-
-func parseLevel(str string) (logspb.LogEntry_Level, error) {
-	level := logspb.LogEntry_NONE
-	switch strings.ToLower(str) {
-	case "", "no", "none":
-	case "i", "info":
-		level = logspb.LogEntry_INFO
-	case "w", "warn", "warning":
-		level = logspb.LogEntry_WARNING
-	case "e", "err", "error":
-		level = logspb.LogEntry_ERROR
-	case "c", "crit", "critical":
-		level = logspb.LogEntry_CRITICAL
-	case "f", "fatal":
-		level = logspb.LogEntry_FATAL
-	default:
-		return level, fmt.Errorf("unknown level: %s", str)
-	}
-	return level, nil
 }

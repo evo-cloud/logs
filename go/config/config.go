@@ -79,6 +79,21 @@ func (c *Config) SetupDefaultLogger() error {
 		if err != nil {
 			return fmt.Errorf("create Stackdriver emitter: %w", err)
 		}
+		if levelStr := os.Getenv("LOGS_STACKDRIVER_MIN_LEVEL"); levelStr != "" {
+			if printer.MinLevel, err = logs.ParseLevel(levelStr); err != nil {
+				return err
+			}
+		}
+		if valStr := os.Getenv("LOGS_STACKDRIVER_MAX_VALUE_SIZE"); valStr != "" {
+			value, err := strconv.Atoi(valStr)
+			if err == nil && value <= 0 {
+				err = fmt.Errorf("non-positive")
+			}
+			if err != nil {
+				return fmt.Errorf("invalid LOGS_STACKDRIVER_MAX_VALUE_SIZE %q: %w", valStr, err)
+			}
+			printer.MaxValueSize = value
+		}
 		emitters = append(emitters, printer)
 	default:
 		return fmt.Errorf("unknown console printer: %s", c.ConsolePrinter)
@@ -87,7 +102,7 @@ func (c *Config) SetupDefaultLogger() error {
 	if c.BlobFile != "" {
 		fn, err := blob.CreateFileWith(c.BlobFile)
 		if err != nil {
-			return fmt.Errorf("Blob filename template: %w", err)
+			return fmt.Errorf("blob filename template: %w", err)
 		}
 		emitters = append(emitters, &blob.Emitter{CreateFile: fn, Sync: c.BlobSync, SizeLimit: c.BlobSizeLimit})
 	}
