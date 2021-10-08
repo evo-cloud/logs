@@ -90,7 +90,7 @@ func (e *JSONEmitter) EmitLogEntry(entry *logspb.LogEntry) {
 		payload.Message = payload.Message[:e.MaxValueSize] + "...<truncated>"
 	}
 	if sz := len(payload.Raw); e.MaxValueSize > 0 && sz > e.MaxValueSize {
-		payload.Raw = json.RawMessage("<truncated>")
+		payload.Raw = json.RawMessage(`"<truncated>"`)
 	}
 	loc := strings.SplitN(entry.GetLocation(), ":", 2)
 	if len(loc) > 1 {
