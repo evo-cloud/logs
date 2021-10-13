@@ -64,8 +64,8 @@ func (c *Config) SetupFlags() {
 	flag.DurationVar(&c.ChunkedCollectPeriod, "logs-chunked-collect-period", c.ChunkedCollectPeriod, "Logs chunked emitter: batch period")
 }
 
-// SetupDefaultLogger sets up the default logger.
-func (c *Config) SetupDefaultLogger() error {
+// Emitter creates LogEmitter based on the current configuration.
+func (c *Config) Emitter() (logs.LogEmitter, error) {
 	var emitters logs.MultiEmitter
 	switch c.ConsolePrinter {
 	case "", "default":
@@ -77,11 +77,11 @@ func (c *Config) SetupDefaultLogger() error {
 	case "stackdriver":
 		printer, err := stackdriver.NewJSONEmitter(os.Stderr, os.Getenv("LOGS_STACKDRIVER_PROJECTID"))
 		if err != nil {
-			return fmt.Errorf("create Stackdriver emitter: %w", err)
+			return nil, fmt.Errorf("create Stackdriver emitter: %w", err)
 		}
 		if levelStr := os.Getenv("LOGS_STACKDRIVER_MIN_LEVEL"); levelStr != "" {
 			if printer.MinLevel, err = logs.ParseLevel(levelStr); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		if valStr := os.Getenv("LOGS_STACKDRIVER_MAX_VALUE_SIZE"); valStr != "" {
@@ -90,29 +90,29 @@ func (c *Config) SetupDefaultLogger() error {
 				err = fmt.Errorf("non-positive")
 			}
 			if err != nil {
-				return fmt.Errorf("invalid LOGS_STACKDRIVER_MAX_VALUE_SIZE %q: %w", valStr, err)
+				return nil, fmt.Errorf("invalid LOGS_STACKDRIVER_MAX_VALUE_SIZE %q: %w", valStr, err)
 			}
 			printer.MaxValueSize = value
 		}
 		emitters = append(emitters, printer)
 	default:
-		return fmt.Errorf("unknown console printer: %s", c.ConsolePrinter)
+		return nil, fmt.Errorf("unknown console printer: %s", c.ConsolePrinter)
 	}
 
 	if c.BlobFile != "" {
 		fn, err := blob.CreateFileWith(c.BlobFile)
 		if err != nil {
-			return fmt.Errorf("blob filename template: %w", err)
+			return nil, fmt.Errorf("blob filename template: %w", err)
 		}
 		emitters = append(emitters, &blob.Emitter{CreateFile: fn, Sync: c.BlobSync, SizeLimit: c.BlobSizeLimit})
 	}
 
 	if c.ESServerURL != "" {
 		if c.ClientName == "" {
-			return fmt.Errorf("ElasticSearch streamer requires client name")
+			return nil, fmt.Errorf("streamer ElasticSearch requires client name")
 		}
 		if c.ESDataStream == "" {
-			return fmt.Errorf("ElasticSearch streamer requires data stream name")
+			return nil, fmt.Errorf("streamer ElasticSearch requires data stream name")
 		}
 		s := elasticsearch.NewStreamer(c.ClientName, c.ESDataStream, c.ESServerURL)
 		emitters = append(emitters, logs.NewStreamEmitter(s))
@@ -120,11 +120,11 @@ func (c *Config) SetupDefaultLogger() error {
 
 	if c.JaegerAddr != "" {
 		if c.ClientName == "" {
-			return fmt.Errorf("Jaeger streamer requires client name")
+			return nil, fmt.Errorf("streamer Jaeger requires client name")
 		}
 		reporter, err := jaeger.New(c.ClientName, c.JaegerAddr, nil)
 		if err != nil {
-			return fmt.Errorf("Jaeger creation error: %w", err)
+			return nil, fmt.Errorf("streamer Jaeger creation error: %w", err)
 		}
 		chunkedEmitter := logs.NewChunkedEmitter(reporter, c.ChunkedMaxBuffer, c.ChunkedMaxBatch)
 		chunkedEmitter.CollectPeriod = c.ChunkedCollectPeriod
@@ -132,10 +132,18 @@ func (c *Config) SetupDefaultLogger() error {
 	}
 
 	if len(emitters) == 1 {
-		logs.Setup(emitters[0])
-	} else {
-		logs.Setup(emitters)
+		return emitters[0], nil
 	}
+	return emitters, nil
+}
+
+// SetupDefaultLogger sets up the default logger.
+func (c *Config) SetupDefaultLogger() error {
+	emitter, err := c.Emitter()
+	if err != nil {
+		return err
+	}
+	logs.Setup(emitter)
 	return nil
 }
 

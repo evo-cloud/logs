@@ -17,8 +17,12 @@ import (
 )
 
 var (
-	catInput    string
-	catColorful bool
+	catInput      string
+	catColorful   bool
+	maxStrAttrLen int
+	maxBinAttrLen int
+	maxPathLen    int
+	fullTraceID   bool
 )
 
 func cmdCat() *cobra.Command {
@@ -39,6 +43,30 @@ func cmdCat() *cobra.Command {
 		true,
 		"Print with color.",
 	)
+	cmd.Flags().IntVar(
+		&maxStrAttrLen,
+		"max-str-attr",
+		80,
+		"Max length of string attributes.",
+	)
+	cmd.Flags().IntVar(
+		&maxBinAttrLen,
+		"max-bin-attr",
+		80,
+		"Max length of binary attributes.",
+	)
+	cmd.Flags().IntVar(
+		&maxPathLen,
+		"max-path",
+		20,
+		"Max length of paths.",
+	)
+	cmd.Flags().BoolVar(
+		&fullTraceID,
+		"full-traceid",
+		false,
+		"Display full trace IDs.",
+	)
 	return cmd
 }
 
@@ -58,6 +86,12 @@ func runCat(cmd *cobra.Command, args []string) error {
 	}
 	reader := &source.StreamReader{In: in, SkipErrors: true}
 	printer := console.NewPrinter(os.Stdout)
+	printer.MaxStrAttrLen = maxStrAttrLen
+	printer.MaxBinAttrLen = maxBinAttrLen
+	printer.MaxPathLen = maxPathLen
+	if fullTraceID {
+		printer.ShortenTraceID = false
+	}
 	if catColorful {
 		if terminal.IsTerminal(int(os.Stdout.Fd())) {
 			printer.UseColor(true)

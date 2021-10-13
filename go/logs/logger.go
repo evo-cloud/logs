@@ -64,10 +64,38 @@ type SpanInfo struct {
 	Links   []*logspb.Link
 }
 
-// Attribute defines a single attribute.
-type Attribute struct {
+// AttributeSetter sets attributes.
+type AttributeSetter interface {
+	SetAttributes(map[string]*logspb.Value)
+}
+
+// AttributeSetterFunc is the func form of AttributeSetter.
+type AttributeSetterFunc func(map[string]*logspb.Value)
+
+// SetAttributes implements AttributeSetter.
+func (f AttributeSetterFunc) SetAttributes(attrs map[string]*logspb.Value) {
+	f(attrs)
+}
+
+// AttributeSetters implements AttributeSetter by applying the items in the slice.
+type AttributeSetters []AttributeSetter
+
+// SetAttributes implements AttributeSetter.
+func (a AttributeSetters) SetAttributes(attrs map[string]*logspb.Value) {
+	for _, setter := range a {
+		setter.SetAttributes(attrs)
+	}
+}
+
+// NamedAttribute defines a single, named attribute.
+type NamedAttribute struct {
 	Name  string
 	Value *logspb.Value
+}
+
+// SetAttributes implements AttributeSetter.
+func (a NamedAttribute) SetAttributes(attrs map[string]*logspb.Value) {
+	attrs[a.Name] = a.Value
 }
 
 // Use returns the logger associated with the context.
@@ -81,70 +109,70 @@ func Use(ctx context.Context) *Logger {
 }
 
 // Span starts a new span from current context.
-func Span(ctx context.Context, name string, attrs ...*Attribute) (context.Context, *Logger) {
+func Span(ctx context.Context, name string, attrs ...AttributeSetter) (context.Context, *Logger) {
 	logger := Use(ctx).StartSpanDepth(1, SpanInfo{Name: name}, attrs...)
 	return logger.NewContext(ctx), logger
 }
 
 // StartSpan is an alias of Span to be compatible with tracing API.
-func StartSpan(ctx context.Context, name string, attrs ...*Attribute) (context.Context, *Logger) {
+func StartSpan(ctx context.Context, name string, attrs ...AttributeSetter) (context.Context, *Logger) {
 	logger := Use(ctx).StartSpanDepth(1, SpanInfo{Name: name}, attrs...)
 	return logger.NewContext(ctx), logger
 }
 
 // StartSpanWith starts a span with detailed SpanInfo.
-func StartSpanWith(ctx context.Context, depth int, info SpanInfo, attrs ...*Attribute) (context.Context, *Logger) {
+func StartSpanWith(ctx context.Context, depth int, info SpanInfo, attrs ...AttributeSetter) (context.Context, *Logger) {
 	logger := Use(ctx).StartSpanDepth(depth+1, info, attrs...)
 	return logger.NewContext(ctx), logger
 }
 
 // Bool creates a boolean attribute.
-func Bool(name string, val bool) *Attribute {
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_BoolValue{BoolValue: val}}}
+func Bool(name string, val bool) AttributeSetter {
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_BoolValue{BoolValue: val}}}
 }
 
 // True creates a boolean attribute with true value.
-func True(name string) *Attribute {
+func True(name string) AttributeSetter {
 	return Bool(name, true)
 }
 
 // False creates a boolean attribute with false value.
-func False(name string) *Attribute {
+func False(name string) AttributeSetter {
 	return Bool(name, false)
 }
 
 // Int creates an integer attribute.
-func Int(name string, val int64) *Attribute {
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_IntValue{IntValue: val}}}
+func Int(name string, val int64) AttributeSetter {
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_IntValue{IntValue: val}}}
 }
 
 // Float creates a float32 attribute.
-func Float(name string, val float32) *Attribute {
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_FloatValue{FloatValue: val}}}
+func Float(name string, val float32) AttributeSetter {
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_FloatValue{FloatValue: val}}}
 }
 
 // Double creates a float64 attribute.
-func Double(name string, val float64) *Attribute {
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_DoubleValue{DoubleValue: val}}}
+func Double(name string, val float64) AttributeSetter {
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_DoubleValue{DoubleValue: val}}}
 }
 
 // Str creates a string attribute.
-func Str(name, val string) *Attribute {
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_StrValue{StrValue: val}}}
+func Str(name, val string) AttributeSetter {
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_StrValue{StrValue: val}}}
 }
 
 // Proto creates an attribute with encoded proto.
-func Proto(name string, msg proto.Message) *Attribute {
+func Proto(name string, msg proto.Message) AttributeSetter {
 	encoded, err := proto.Marshal(msg)
 	if err != nil {
 		panic(err)
 	}
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_Proto{Proto: encoded}}}
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_Proto{Proto: encoded}}}
 }
 
 // ProtoJSON creates an attribute with proto formatted in JSON.
-func ProtoJSON(name string, msg proto.Message) *Attribute {
-	return &Attribute{
+func ProtoJSON(name string, msg proto.Message) AttributeSetter {
+	return &NamedAttribute{
 		Name: name,
 		Value: &logspb.Value{
 			Value: &logspb.Value_Json{
@@ -155,12 +183,12 @@ func ProtoJSON(name string, msg proto.Message) *Attribute {
 }
 
 // JSON creates an attribute with value in a JSON string.
-func JSON(name string, val interface{}) *Attribute {
+func JSON(name string, val interface{}) AttributeSetter {
 	encoded, err := json.Marshal(val)
 	if err != nil {
 		panic(err)
 	}
-	return &Attribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_Json{Json: string(encoded)}}}
+	return &NamedAttribute{Name: name, Value: &logspb.Value{Value: &logspb.Value_Json{Json: string(encoded)}}}
 }
 
 // NewTraceID returns a new trace ID.
@@ -310,7 +338,7 @@ func (l *Logger) SpanInfo() SpanInfo {
 }
 
 // New creates a child logger.
-func (l *Logger) New(attrs ...*Attribute) *Logger {
+func (l *Logger) New(attrs ...AttributeSetter) *Logger {
 	c := &Logger{
 		emitter: l.emitter,
 		parent:  l,
@@ -324,15 +352,15 @@ func (l *Logger) New(attrs ...*Attribute) *Logger {
 }
 
 // SetAttrs adds attributes into the current logger.
-func (l *Logger) SetAttrs(attrs ...*Attribute) *Logger {
+func (l *Logger) SetAttrs(attrs ...AttributeSetter) *Logger {
 	for _, attr := range attrs {
-		l.attrs[attr.Name] = attr.Value
+		attr.SetAttributes(l.attrs)
 	}
 	return l
 }
 
 // StartSpanDepth creates a logger for a new span with specified call stack depth.
-func (l *Logger) StartSpanDepth(depth int, info SpanInfo, attrs ...*Attribute) *Logger {
+func (l *Logger) StartSpanDepth(depth int, info SpanInfo, attrs ...AttributeSetter) *Logger {
 	c := l.New(attrs...)
 	c.span = &SpanInfo{
 		Name:    info.Name,
@@ -391,7 +419,7 @@ func (l *Logger) EndSpanDepth(depth int) *Logger {
 }
 
 // StartSpan starts a new span.
-func (l *Logger) StartSpan(info SpanInfo, attrs ...*Attribute) *Logger {
+func (l *Logger) StartSpan(info SpanInfo, attrs ...AttributeSetter) *Logger {
 	return l.StartSpanDepth(1, info, attrs...)
 }
 
@@ -416,7 +444,7 @@ func (l *Logger) Printer(depth int) *LogPrinter {
 }
 
 // With is a shortcut.
-func (l *Logger) With(attrs ...*Attribute) *LogPrinter {
+func (l *Logger) With(attrs ...AttributeSetter) *LogPrinter {
 	return l.Printer(1).With(attrs...)
 }
 
@@ -540,9 +568,9 @@ func (l *Logger) emit(entry *logspb.LogEntry) {
 }
 
 // With sets attributes.
-func (p *LogPrinter) With(attrs ...*Attribute) *LogPrinter {
+func (p *LogPrinter) With(attrs ...AttributeSetter) *LogPrinter {
 	for _, attr := range attrs {
-		p.entry.Attributes[attr.Name] = attr.Value
+		attr.SetAttributes(p.entry.Attributes)
 	}
 	return p
 }

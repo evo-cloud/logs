@@ -7,7 +7,7 @@ import (
 )
 
 // With is a shortcut.
-func With(attrs ...*Attribute) *LogPrinter {
+func With(attrs ...AttributeSetter) *LogPrinter {
 	return Default().Printer(1).With(attrs...)
 }
 

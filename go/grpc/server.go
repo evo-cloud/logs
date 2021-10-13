@@ -19,14 +19,14 @@ type SpanInfoExtractor interface {
 
 // AttributesBuilder injects attributes into context.
 type AttributesBuilder interface {
-	BuildAttributes(ctx context.Context, md metadata.MD, info *stats.RPCTagInfo) []*logs.Attribute
+	BuildAttributes(ctx context.Context, md metadata.MD, info *stats.RPCTagInfo) logs.AttributeSetter
 }
 
 // AttributesBuilderFunc is the func form of AttributesBuilder.
-type AttributesBuilderFunc func(ctx context.Context, md metadata.MD, info *stats.RPCTagInfo) []*logs.Attribute
+type AttributesBuilderFunc func(ctx context.Context, md metadata.MD, info *stats.RPCTagInfo) logs.AttributeSetter
 
 // BuildAttributes implements AttributesBuilder.
-func (f AttributesBuilderFunc) BuildAttributes(ctx context.Context, md metadata.MD, info *stats.RPCTagInfo) []*logs.Attribute {
+func (f AttributesBuilderFunc) BuildAttributes(ctx context.Context, md metadata.MD, info *stats.RPCTagInfo) logs.AttributeSetter {
 	return f(ctx, md, info)
 }
 
@@ -51,12 +51,12 @@ func (h *ServerStatsHandler) WithAttributesBuilder(b AttributesBuilder) *ServerS
 func (h *ServerStatsHandler) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
 	md, _ := metadata.FromIncomingContext(ctx)
 	spanInfo := h.SpanInfoExtractor.ExtractSpanInfo(md, info)
-	var attrs []*logs.Attribute
+	var attrs logs.AttributeSetter
 	if b := h.AttributesBuilder; b != nil {
 		attrs = b.BuildAttributes(ctx, md, info)
 	}
 	spanInfo.Name = rpcSpanName(info)
-	ctx, _ = logs.StartSpanWith(ctx, 0, spanInfo, attrs...)
+	ctx, _ = logs.StartSpanWith(ctx, 0, spanInfo, attrs)
 	return ctx
 }
 

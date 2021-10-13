@@ -20,7 +20,7 @@ type HTTPResponseAttrs struct {
 }
 
 // HTTPRequest creates an Attribute from an HTTP request.
-func HTTPRequest(name string, r *http.Request) *Attribute {
+func HTTPRequest(name string, r *http.Request) AttributeSetter {
 	attrs := &HTTPRequestAttrs{Method: r.Method, Path: r.URL.Path, Headers: make(map[string]string)}
 	attrs.Headers["Host"] = r.Host
 	for name, vals := range r.Header {
@@ -38,7 +38,7 @@ func HTTPRequest(name string, r *http.Request) *Attribute {
 }
 
 // HTTPResponse creates an Attribute from an HTTP response.
-func HTTPResponse(name string, r *http.Response) *Attribute {
+func HTTPResponse(name string, r *http.Response) AttributeSetter {
 	attrs := &HTTPResponseAttrs{Status: r.Status, StatusCode: r.StatusCode, Headers: make(map[string]string)}
 	for name, vals := range r.Header {
 		attrs.Headers[name] = strings.Join(vals, "; ")

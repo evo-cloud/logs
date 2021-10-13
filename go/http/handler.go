@@ -20,14 +20,14 @@ type SpanInfoExtractor interface {
 
 // AttributesBuilder injects attributes into context.
 type AttributesBuilder interface {
-	BuildAttributes(r *http.Request) []*logs.Attribute
+	BuildAttributes(r *http.Request) logs.AttributeSetter
 }
 
 // AttributesBuilderFunc is the func form of AttributesBuilder.
-type AttributesBuilderFunc func(r *http.Request) []*logs.Attribute
+type AttributesBuilderFunc func(r *http.Request) logs.AttributeSetter
 
 // BuildAttributes implements AttributesBuilder.
-func (f AttributesBuilderFunc) BuildAttributes(r *http.Request) []*logs.Attribute {
+func (f AttributesBuilderFunc) BuildAttributes(r *http.Request) logs.AttributeSetter {
 	return f(r)
 }
 
@@ -58,12 +58,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	spanInfo := h.SpanInfoExtractor.ExtractSpanInfo(r)
 	spanInfo.Name = requestSpanName(r)
-	var attrs []*logs.Attribute
+	var attrs logs.AttributeSetters
 	if b := h.AttributesBuilder; b != nil {
-		attrs = b.BuildAttributes(r)
+		attrs = append(attrs, b.BuildAttributes(r))
 	}
 	attrs = append(attrs, logs.HTTPRequest("http", r))
-	ctx, span := logs.StartSpanWith(ctx, 0, spanInfo, attrs...)
+	ctx, span := logs.StartSpanWith(ctx, 0, spanInfo, attrs)
 	defer span.End()
 	h.Next.ServeHTTP(w, r.WithContext(ctx))
 }
