@@ -17,12 +17,13 @@ import (
 )
 
 var (
-	catInput      string
-	catColorful   bool
-	maxStrAttrLen int
-	maxBinAttrLen int
-	maxPathLen    int
-	fullTraceID   bool
+	catInput    string
+	catColorful bool
+	fullTraceID bool
+
+	maxStrAttrLen = intFromEnv("LOGS_CAT_MAX_STR_ATTR", 80)
+	maxBinAttrLen = intFromEnv("LOGS_CAT_MAX_BIN_ATTR", 8)
+	maxPathLen    = intFromEnv("LOGS_CAT_MAX_PATH", 20)
 )
 
 func cmdCat() *cobra.Command {
@@ -46,19 +47,19 @@ func cmdCat() *cobra.Command {
 	cmd.Flags().IntVar(
 		&maxStrAttrLen,
 		"max-str-attr",
-		80,
+		maxStrAttrLen,
 		"Max length of string attributes.",
 	)
 	cmd.Flags().IntVar(
 		&maxBinAttrLen,
 		"max-bin-attr",
-		80,
+		maxBinAttrLen,
 		"Max length of binary attributes.",
 	)
 	cmd.Flags().IntVar(
 		&maxPathLen,
 		"max-path",
-		20,
+		maxPathLen,
 		"Max length of paths.",
 	)
 	cmd.Flags().BoolVar(
