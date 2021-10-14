@@ -354,7 +354,9 @@ func (l *Logger) New(attrs ...AttributeSetter) *Logger {
 // SetAttrs adds attributes into the current logger.
 func (l *Logger) SetAttrs(attrs ...AttributeSetter) *Logger {
 	for _, attr := range attrs {
-		attr.SetAttributes(l.attrs)
+		if attr != nil {
+			attr.SetAttributes(l.attrs)
+		}
 	}
 	return l
 }
