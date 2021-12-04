@@ -7,12 +7,15 @@ import (
 	"strconv"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/evo-cloud/logs/go/emitters/blob"
 	"github.com/evo-cloud/logs/go/emitters/console"
 	"github.com/evo-cloud/logs/go/emitters/stackdriver"
 	"github.com/evo-cloud/logs/go/logs"
 	"github.com/evo-cloud/logs/go/streamers/elasticsearch"
 	"github.com/evo-cloud/logs/go/streamers/jaeger"
+	"github.com/evo-cloud/logs/go/streamers/remote"
 )
 
 // Config defines the configuration for logging.
@@ -33,10 +36,25 @@ type Config struct {
 	// Jaeger streamer.
 	JaegerAddr string
 
+	// Remote streamer.
+	RemoteAddr     string
+	RemoteInsecure bool
+
 	// Chunked streaming configurations.
 	ChunkedMaxBuffer     int
 	ChunkedMaxBatch      int
 	ChunkedCollectPeriod time.Duration
+
+	// EmitterVerbose allows emitter to write errors using emergent logger.
+	EmitterVerbose bool
+}
+
+type FlagSet interface {
+	StringVar(*string, string, string, string)
+	BoolVar(*bool, string, bool, string)
+	Int64Var(*int64, string, int64, string)
+	IntVar(*int, string, int, string)
+	DurationVar(*time.Duration, string, time.Duration, string)
 }
 
 // Default creates a default configuration.
@@ -50,18 +68,25 @@ func Default() *Config {
 
 // SetupFlags sets up commandline flags.
 func (c *Config) SetupFlags() {
-	flag.StringVar(&c.ClientName, "logs-client", os.Getenv("LOGS_CLIENT"), "Logs client name")
-	flag.StringVar(&c.ConsolePrinter, "logs-printer", os.Getenv("LOGS_PRINTER"), "Logs console printer")
-	flag.BoolVar(&c.Color, "logs-color", c.Color, "Enable color on console printer")
-	flag.StringVar(&c.BlobFile, "logs-blob-file", os.Getenv("LOGS_BLOB_FILE"), "Blob filename template for writing binary proto encoded logs to files")
-	flag.BoolVar(&c.BlobSync, "logs-blob-sync", c.BlobSync, "Blob file writes with sync")
-	flag.Int64Var(&c.BlobSizeLimit, "logs-blob-sizelimit", c.BlobSizeLimit, "Blob file size limit, 0 means no limit")
-	flag.StringVar(&c.ESServerURL, "logs-es-url", os.Getenv("LOGS_ES_URL"), "ElasticSearch server URL")
-	flag.StringVar(&c.ESDataStream, "logs-es-datastream", os.Getenv("LOGS_ES_DATASTREAM"), "ElasticSearch data stream")
-	flag.StringVar(&c.JaegerAddr, "logs-jaeger-addr", os.Getenv("LOGS_JAEGER_ADDR"), "Jaeger server address (host:port)")
-	flag.IntVar(&c.ChunkedMaxBuffer, "logs-chunked-buffer-max", c.ChunkedMaxBuffer, "Logs chunked emitter: max buffer of unstreamed logs")
-	flag.IntVar(&c.ChunkedMaxBatch, "logs-chunked-batch-max", c.ChunkedMaxBatch, "Logs chunked emitter: max size in one batch")
-	flag.DurationVar(&c.ChunkedCollectPeriod, "logs-chunked-collect-period", c.ChunkedCollectPeriod, "Logs chunked emitter: batch period")
+	c.SetupFlagsWith(flag.CommandLine)
+}
+
+func (c *Config) SetupFlagsWith(f FlagSet) {
+	f.StringVar(&c.ClientName, "logs-client", os.Getenv("LOGS_CLIENT"), "Logs client name")
+	f.StringVar(&c.ConsolePrinter, "logs-printer", os.Getenv("LOGS_PRINTER"), "Logs console printer")
+	f.BoolVar(&c.Color, "logs-color", c.Color, "Enable color on console printer")
+	f.StringVar(&c.BlobFile, "logs-blob-file", os.Getenv("LOGS_BLOB_FILE"), "Blob filename template for writing binary proto encoded logs to files")
+	f.BoolVar(&c.BlobSync, "logs-blob-sync", c.BlobSync, "Blob file writes with sync")
+	f.Int64Var(&c.BlobSizeLimit, "logs-blob-sizelimit", c.BlobSizeLimit, "Blob file size limit, 0 means no limit")
+	f.StringVar(&c.ESServerURL, "logs-es-url", os.Getenv("LOGS_ES_URL"), "ElasticSearch server URL")
+	f.StringVar(&c.ESDataStream, "logs-es-datastream", os.Getenv("LOGS_ES_DATASTREAM"), "ElasticSearch data stream")
+	f.StringVar(&c.JaegerAddr, "logs-jaeger-addr", os.Getenv("LOGS_JAEGER_ADDR"), "Jaeger server address (host:port)")
+	f.StringVar(&c.RemoteAddr, "logs-remote-addr", os.Getenv("LOGS_REMOTE_ADDR"), "Remote server address (host:port)")
+	f.BoolVar(&c.RemoteInsecure, "logs-remote-insecure", false, "Remote server address is insecre")
+	f.IntVar(&c.ChunkedMaxBuffer, "logs-chunked-buffer-max", c.ChunkedMaxBuffer, "Logs chunked emitter: max buffer of unstreamed logs")
+	f.IntVar(&c.ChunkedMaxBatch, "logs-chunked-batch-max", c.ChunkedMaxBatch, "Logs chunked emitter: max size in one batch")
+	f.DurationVar(&c.ChunkedCollectPeriod, "logs-chunked-collect-period", c.ChunkedCollectPeriod, "Logs chunked emitter: batch period")
+	f.BoolVar(&c.EmitterVerbose, "logs-emitter-verbose", c.EmitterVerbose, "Allow emitters write error logs using emergent logger")
 }
 
 // Emitter creates LogEmitter based on the current configuration.
@@ -115,6 +140,7 @@ func (c *Config) Emitter() (logs.LogEmitter, error) {
 			return nil, fmt.Errorf("streamer ElasticSearch requires data stream name")
 		}
 		s := elasticsearch.NewStreamer(c.ClientName, c.ESDataStream, c.ESServerURL)
+		s.Verbose = c.EmitterVerbose
 		emitters = append(emitters, logs.NewStreamEmitter(s))
 	}
 
@@ -129,6 +155,22 @@ func (c *Config) Emitter() (logs.LogEmitter, error) {
 		chunkedEmitter := logs.NewChunkedEmitter(reporter, c.ChunkedMaxBuffer, c.ChunkedMaxBatch)
 		chunkedEmitter.CollectPeriod = c.ChunkedCollectPeriod
 		emitters = append(emitters, chunkedEmitter)
+	}
+
+	if c.RemoteAddr != "" {
+		if c.ClientName == "" {
+			return nil, fmt.Errorf("streamer Remote requires client name")
+		}
+		var opts []grpc.DialOption
+		if c.RemoteInsecure {
+			opts = append(opts, grpc.WithInsecure())
+		}
+		streamer, err := remote.NewStreamer(c.ClientName, c.RemoteAddr, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("streamer Remote creation error: %w", err)
+		}
+		streamer.Verbose = c.EmitterVerbose
+		emitters = append(emitters, logs.NewStreamEmitter(streamer))
 	}
 
 	if len(emitters) == 1 {

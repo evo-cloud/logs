@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	"google.golang.org/grpc"
@@ -18,13 +19,18 @@ const (
 
 // Streamer streams logs to remote server.
 type Streamer struct {
+	Verbose bool
+
 	clientName string
 	conn       *grpc.ClientConn
+
+	streamLock sync.Mutex
+	stream     logspb.IngressService_IngressStreamClient
 }
 
 // NewStreamer creates a Streamer.
-func NewStreamer(clientName, serverAddr string) (*Streamer, error) {
-	conn, err := grpc.Dial(serverAddr)
+func NewStreamer(clientName, serverAddr string, grpcOpts ...grpc.DialOption) (*Streamer, error) {
+	conn, err := grpc.Dial(serverAddr, grpcOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +44,49 @@ func NewStreamer(clientName, serverAddr string) (*Streamer, error) {
 func (s *Streamer) Close() error {
 	s.conn.Close()
 	return nil
+}
+
+// StreamLogEntries implements logs.LogStreamer.
+func (s *Streamer) StreamLogEntries(ctx context.Context, entries []*logspb.LogEntry) error {
+	stream, err := s.ensureIngressStreamClient(ctx)
+	if err != nil {
+		if s.Verbose {
+			return logs.Emergent().Error(err).PrintErr("IngressStream: ")
+		}
+		return err
+	}
+	err = stream.Send(&logspb.IngressBatch{Entries: entries, ChunkEnd: true})
+	if err != nil && s.Verbose {
+		return logs.Emergent().Error(err).PrintErr("Send: ")
+	}
+	return err
+}
+
+func (s *Streamer) ensureIngressStreamClient(ctx context.Context) (logspb.IngressService_IngressStreamClient, error) {
+	s.streamLock.Lock()
+	defer s.streamLock.Unlock()
+	if s.stream != nil {
+		return s.stream, nil
+	}
+	ctx = metadata.AppendToOutgoingContext(ctx, RemoteMetadataKeyClientName, s.clientName)
+	stream, err := logspb.NewIngressServiceClient(s.conn).IngressStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			if _, err := stream.Recv(); err != nil {
+				break
+			}
+		}
+		s.streamLock.Lock()
+		defer s.streamLock.Unlock()
+		if s.stream == stream {
+			s.stream = nil
+		}
+	}()
+	s.stream = stream
+	return stream, nil
 }
 
 // StartStreamInChunk implements ChunkedStreamer.

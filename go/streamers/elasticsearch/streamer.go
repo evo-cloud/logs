@@ -28,6 +28,7 @@ type Streamer struct {
 	DataStream string
 	ServerURL  string
 	Client     *http.Client
+	Verbose    bool
 
 	traceAPI bool
 }
@@ -99,7 +100,7 @@ type BulkError struct {
 }
 
 func (s *Streamer) bulk(payload io.Reader) error {
-	req, err := http.NewRequest(http.MethodPut, s.ServerURL+"/"+s.DataStream+"/_bulk", payload)
+	req, err := http.NewRequest(http.MethodPost, s.ServerURL+"/"+s.DataStream+"/_bulk", payload)
 	if err != nil {
 		return err
 	}
@@ -175,8 +176,12 @@ func (s *stream) flush() {
 	err := s.streamer.bulk(&s.payload)
 	s.payload.Reset()
 	if err != nil {
-		logs.Emergent().Error(err).PrintErr("Bulk: ")
-	} else if encodedLastNanoTS > s.lastNanoTS {
+		if s.streamer.Verbose {
+			logs.Emergent().Error(err).PrintErr("Bulk: ")
+		}
+		return
+	}
+	if encodedLastNanoTS > s.lastNanoTS {
 		s.lastNanoTS = encodedLastNanoTS
 	}
 }

@@ -5,7 +5,11 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"github.com/evo-cloud/logs/go/config"
 )
+
+var logsConfig config.Config
 
 func intFromEnv(name string, defaultVal int) int {
 	str := os.Getenv(name)
@@ -20,8 +24,10 @@ func intFromEnv(name string, defaultVal int) int {
 
 func main() {
 	cmd := cobra.Command{
-		Use: "logs COMMAND ...",
+		Use:          "logs COMMAND ...",
+		SilenceUsage: true,
 	}
-	cmd.AddCommand(cmdCat())
+	logsConfig.SetupFlagsWith(cmd.PersistentFlags())
+	cmd.AddCommand(cmdCat(), cmdHub(), cmdGen())
 	cmd.Execute()
 }

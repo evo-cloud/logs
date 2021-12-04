@@ -4,7 +4,9 @@ go 1.16
 
 require (
 	cloud.google.com/go v0.34.0
+	github.com/corpix/uarand v0.1.1 // indirect
 	github.com/golang/protobuf v1.5.2
+	github.com/icrowley/fake v0.0.0-20180203215853-4178557ae428
 	github.com/jaegertracing/jaeger v1.22.0
 	github.com/jinzhu/now v1.1.2
 	github.com/spf13/cobra v0.0.7
