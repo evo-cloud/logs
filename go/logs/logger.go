@@ -40,8 +40,39 @@ func (f LogEmitterFunc) EmitLogEntry(entry *logspb.LogEntry) {
 	f(entry)
 }
 
+// ErrorFilter optionally filters/transforms errors when calling log.Error/Warning/Critical etc.
+// including those formatting variants (e.g. Errorf).
+type ErrorFilter interface {
+	// FilterError filters/transforms an error.
+	// If it returns nil as error, the log entry will be ignored.
+	FilterError(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error)
+}
+
+type ErrorFilterFunc func(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error)
+
+func (f ErrorFilterFunc) FilterError(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error) {
+	return f(level, err)
+}
+
+type ErrorFilters []ErrorFilter
+
+func (f ErrorFilters) FilterError(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error) {
+	if err == nil {
+		return level, nil
+	}
+	for _, filter := range f {
+		level, err = filter.FilterError(level, err)
+		if err == nil {
+			break
+		}
+	}
+	return level, err
+}
+
 // Logger is the API for emitting logs.
 type Logger struct {
+	ErrorFilter ErrorFilter
+
 	emitter LogEmitter
 	parent  *Logger
 	span    *SpanInfo
@@ -340,10 +371,11 @@ func (l *Logger) SpanInfo() SpanInfo {
 // New creates a child logger.
 func (l *Logger) New(attrs ...AttributeSetter) *Logger {
 	c := &Logger{
-		emitter: l.emitter,
-		parent:  l,
-		span:    l.span,
-		attrs:   make(map[string]*logspb.Value),
+		ErrorFilter: l.ErrorFilter,
+		emitter:     l.emitter,
+		parent:      l,
+		span:        l.span,
+		attrs:       make(map[string]*logspb.Value),
 	}
 	for k, v := range l.attrs {
 		c.attrs[k] = v
@@ -720,6 +752,9 @@ func (p *LogPrinter) PrintErrf(prefixFormat string, args ...interface{}) error {
 }
 
 func (p *LogPrinter) setError(level logspb.LogEntry_Level, err error) {
+	if filter := p.logger.ErrorFilter; err != nil && filter != nil {
+		level, err = filter.FilterError(level, err)
+	}
 	p.entry.Level = level
 	if err != nil {
 		p.With(Str("error", err.Error()))
