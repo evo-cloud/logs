@@ -40,34 +40,10 @@ func (f LogEmitterFunc) EmitLogEntry(entry *logspb.LogEntry) {
 	f(entry)
 }
 
-// ErrorFilter optionally filters/transforms errors when calling log.Error/Warning/Critical etc.
-// including those formatting variants (e.g. Errorf).
-type ErrorFilter interface {
-	// FilterError filters/transforms an error.
-	// If it returns nil as error, the log entry will be ignored.
-	FilterError(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error)
-}
-
-type ErrorFilterFunc func(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error)
-
-func (f ErrorFilterFunc) FilterError(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error) {
-	return f(level, err)
-}
-
-type ErrorFilters []ErrorFilter
-
-func (f ErrorFilters) FilterError(level logspb.LogEntry_Level, err error) (logspb.LogEntry_Level, error) {
-	if err == nil {
-		return level, nil
-	}
-	for _, filter := range f {
-		level, err = filter.FilterError(level, err)
-		if err == nil {
-			break
-		}
-	}
-	return level, err
-}
+// ErrorFilter determines whether to emit the log based on the
+// associated error. If returns false, the log is not emitted.
+// It won't be used if log level is FATAL.
+type ErrorFilter func(err error) bool
 
 // Logger is the API for emitting logs.
 type Logger struct {
@@ -431,7 +407,7 @@ func (l *Logger) StartSpanDepth(depth int, info SpanInfo, attrs ...AttributeSett
 		},
 	}
 	entry.Message = fmt.Sprintf("SPAN_START %s", c.span)
-	c.emit(entry)
+	c.emit(entry, nil)
 	return c
 }
 
@@ -445,7 +421,7 @@ func (l *Logger) EndSpanDepth(depth int) *Logger {
 		SpanEnd: &logspb.Trace_SpanEnd{},
 	}
 	entry.Message = fmt.Sprintf("SPAN_END %s", l.span)
-	l.emit(entry)
+	l.emit(entry, nil)
 	if l.parent == nil {
 		return Default()
 	}
@@ -594,7 +570,10 @@ func (l *Logger) makeEntry(depth int) *logspb.LogEntry {
 	return entry
 }
 
-func (l *Logger) emit(entry *logspb.LogEntry) {
+func (l *Logger) emit(entry *logspb.LogEntry, err error) {
+	if err != nil && entry.Level != logspb.LogEntry_FATAL && l.ErrorFilter != nil && !l.ErrorFilter(err) {
+		return
+	}
 	l.emitter.EmitLogEntry(entry)
 	if entry.Level == logspb.LogEntry_FATAL {
 		os.Exit(1)
@@ -642,13 +621,13 @@ func (p *LogPrinter) Fatal(err error) *LogPrinter {
 // Print prints a message.
 func (p *LogPrinter) Print(message string) {
 	p.entry.Message = message
-	p.logger.emit(p.entry)
+	p.logger.emit(p.entry, p.err)
 }
 
 // Printf formats a message and print.
 func (p *LogPrinter) Printf(format string, args ...interface{}) {
 	p.entry.Message = fmt.Sprintf(format, args...)
-	p.logger.emit(p.entry)
+	p.logger.emit(p.entry, p.err)
 }
 
 // Infof sets info level, formats and prints the message.
@@ -752,9 +731,6 @@ func (p *LogPrinter) PrintErrf(prefixFormat string, args ...interface{}) error {
 }
 
 func (p *LogPrinter) setError(level logspb.LogEntry_Level, err error) {
-	if filter := p.logger.ErrorFilter; err != nil && filter != nil {
-		level, err = filter.FilterError(level, err)
-	}
 	p.entry.Level = level
 	if err != nil {
 		p.With(Str("error", err.Error()))
