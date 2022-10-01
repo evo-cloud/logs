@@ -13,27 +13,28 @@ import (
 type JSONReader struct {
 	SkipErrors bool
 
-	scanner *bufio.Scanner
-	end     bool
+	reader *bufio.Reader
+	err error
 }
 
 // NewJSON creates a JSONReader.
 func NewJSON(in io.Reader) *JSONReader {
-	return &JSONReader{scanner: bufio.NewScanner(in)}
+	return &JSONReader{reader: bufio.NewReader(in)}
 }
 
 // Read implements Reader.
 func (r *JSONReader) Read(ctx context.Context) (*logspb.LogEntry, error) {
-	if r.end {
-		return nil, io.EOF
+	if r.err != nil {
+		return nil, r.err
 	}
 	for {
-		if !r.scanner.Scan() {
-			r.end = true
-			return nil, nil
+		line, err := r.reader.ReadString('\n')
+		if err != nil {
+			r.err = err
+			return nil, err
 		}
 		entry := &logspb.LogEntry{}
-		if err := protojson.Unmarshal([]byte(r.scanner.Text()), entry); err != nil {
+		if err := protojson.Unmarshal([]byte(line), entry); err != nil {
 			if r.SkipErrors {
 				continue
 			}

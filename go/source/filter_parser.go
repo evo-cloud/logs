@@ -29,6 +29,10 @@ func ParseFilters(strs ...string) (LogEntryFilters, error) {
 
 // ParseFilter parses a string into a LogEntryFilter.
 func ParseFilter(str string) (LogEntryFilter, error) {
+	if strings.HasPrefix(str, "a:") {
+		return ParseAttributeFilter(str[2:])
+	}
+
 	tokens := strings.SplitN(str, "=", 2)
 
 	if len(tokens) == 1 {
@@ -39,7 +43,7 @@ func ParseFilter(str string) (LogEntryFilter, error) {
 	}
 
 	val := tokens[1]
-	switch strings.ToLower(tokens[0]) {
+	switch token := strings.ToLower(tokens[0]); token {
 	case "since":
 		t, err := parseTime(val)
 		if err != nil {
@@ -65,17 +69,28 @@ func ParseFilter(str string) (LogEntryFilter, error) {
 		if val == "" {
 			return nil, nil
 		}
-		if strings.HasPrefix(val, "!") || strings.HasPrefix(val, "~") {
-			return LocationNotContains(val[1:]), nil
+		filter := &LocationFilter{}
+		for _, item := range strings.Split(val, ",") {
+			if item == "" {
+				continue
+			}
+			if strings.HasPrefix(val, "!") || strings.HasPrefix(val, "~") {
+				filter.NotContains = append(filter.NotContains, val[1:])
+				continue
+			}
+			if strings.HasPrefix(val, "+") {
+				filter.ContainsAll = append(filter.ContainsAll, val[1:])
+				continue
+			}
+			filter.ContainsAny = append(filter.ContainsAny, item)
 		}
-		return LocationContains(val), nil
+		return filter, nil
 	case "span-events", "span-event", "event", "se", "ev":
 		switch strings.ToLower(val) {
 		case "", "no", "none":
 			return ExcludeSpanEvents(), nil
 		}
 		return nil, nil
-
 	default:
 		return nil, fmt.Errorf("unknown filter: %s", str)
 	}
