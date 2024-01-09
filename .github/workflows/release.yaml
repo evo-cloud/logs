@@ -32,6 +32,6 @@ jobs:
         set -x
         tag_name="${GITHUB_REF##*/}"
         tar -C _local/bin -czf "$(pwd)/_local/logs-linux.tar.gz" --owner=0 --group=0 logs
-        gh release create -a _local/logs-linux.tar.gz -m "$tag_name" "$tag_name"
+        gh release create "$tag_name" _local/logs-linux.tar.gz 
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
