@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	jaegerpb "github.com/jaegertracing/jaeger/model"
-	jaegerapi "github.com/jaegertracing/jaeger/proto-gen/api_v2"
+	jaegerpb "github.com/jaegertracing/jaeger-idl/model/v1"
+	jaegerapi "github.com/jaegertracing/jaeger-idl/proto-gen/api_v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
