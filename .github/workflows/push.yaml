@@ -25,9 +25,3 @@ jobs:
         cd go
         CGO_ENABLED=0 go build -o ../_local/bin/logs ./cmd/logs/
       shell: bash
-
-    - name: Save artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: binaries
-        path: _local/bin
