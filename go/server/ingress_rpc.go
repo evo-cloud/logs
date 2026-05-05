@@ -10,23 +10,12 @@ import (
 	"google.golang.org/grpc/status"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
-	"github.com/evo-cloud/logs/go/streamers/remote"
+	"github.com/evo-cloud/logs/go/logs"
 )
 
 const (
 	maxPendingAcknowledges = 8
 )
-
-// LogStore is the abstraction of log storage.
-type LogStore interface {
-	WriteBatch(ctx context.Context, name string) (BatchWriter, error)
-}
-
-// BatchWriter writes logs in batch.
-type BatchWriter interface {
-	io.Closer
-	WriteLogEntry(ctx context.Context, entry *logspb.LogEntry) error
-}
 
 // IngressServer implement logz ingress server
 type IngressServer struct {
@@ -40,7 +29,7 @@ func (s *IngressServer) IngressStream(stream logspb.IngressService_IngressStream
 	ctx := stream.Context()
 	var clientName string
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		for _, val := range md.Get(remote.RemoteMetadataKeyClientName) {
+		for _, val := range md.Get(logs.RPCMetadataKeyClientName) {
 			if val != "" {
 				clientName = val
 				break

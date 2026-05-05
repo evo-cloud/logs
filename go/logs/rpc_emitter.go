@@ -1,4 +1,4 @@
-package remote
+package logs
 
 import (
 	"context"
@@ -9,16 +9,15 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
-	"github.com/evo-cloud/logs/go/logs"
 )
 
 const (
-	// RemoteMetadataKeyClientName specifies the key in gRPC context for client name.
-	RemoteMetadataKeyClientName = "logs-client"
+	// RPCMetadataKeyClientName specifies the key in gRPC context for client name.
+	RPCMetadataKeyClientName = "logs-client"
 )
 
-// Streamer streams logs to remote server.
-type Streamer struct {
+// Emit batch of log entries to remote RPC server.
+type RPCBatchEmitter struct {
 	Verbose bool
 
 	clientName string
@@ -28,47 +27,47 @@ type Streamer struct {
 	stream     logspb.IngressService_IngressStreamClient
 }
 
-// NewStreamer creates a Streamer.
-func NewStreamer(clientName, serverAddr string, grpcOpts ...grpc.DialOption) (*Streamer, error) {
-	conn, err := grpc.Dial(serverAddr, grpcOpts...)
+// NewRPCBatchEmitter creates a RPCBatchEmitter.
+func NewRPCBatchEmitter(clientName, serverAddr string, grpcOpts ...grpc.DialOption) (*RPCBatchEmitter, error) {
+	conn, err := grpc.NewClient(serverAddr, grpcOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return &Streamer{
+	return &RPCBatchEmitter{
 		clientName: clientName,
 		conn:       conn,
 	}, nil
 }
 
 // Close closes the underlying gRPC connection.
-func (s *Streamer) Close() error {
+func (s *RPCBatchEmitter) Close() error {
 	s.conn.Close()
 	return nil
 }
 
-// StreamLogEntries implements logs.LogStreamer.
-func (s *Streamer) StreamLogEntries(ctx context.Context, entries []*logspb.LogEntry) error {
+// StreamLogEntries implements BatchEmitter.
+func (s *RPCBatchEmitter) EmitLogEntries(ctx context.Context, entries []*logspb.LogEntry) error {
 	stream, err := s.ensureIngressStreamClient(ctx)
 	if err != nil {
 		if s.Verbose {
-			return logs.Emergent().Error(err).PrintErr("IngressStream: ")
+			return Emergent().Error(err).PrintErr("IngressStream: ")
 		}
 		return err
 	}
 	err = stream.Send(&logspb.IngressBatch{Entries: entries, ChunkEnd: true})
 	if err != nil && s.Verbose {
-		return logs.Emergent().Error(err).PrintErr("Send: ")
+		return Emergent().Error(err).PrintErr("Send: ")
 	}
 	return err
 }
 
-func (s *Streamer) ensureIngressStreamClient(ctx context.Context) (logspb.IngressService_IngressStreamClient, error) {
+func (s *RPCBatchEmitter) ensureIngressStreamClient(ctx context.Context) (logspb.IngressService_IngressStreamClient, error) {
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	if s.stream != nil {
 		return s.stream, nil
 	}
-	ctx = metadata.AppendToOutgoingContext(ctx, RemoteMetadataKeyClientName, s.clientName)
+	ctx = metadata.AppendToOutgoingContext(ctx, RPCMetadataKeyClientName, s.clientName)
 	stream, err := logspb.NewIngressServiceClient(s.conn).IngressStream(ctx)
 	if err != nil {
 		return nil, err
@@ -90,8 +89,8 @@ func (s *Streamer) ensureIngressStreamClient(ctx context.Context) (logspb.Ingres
 }
 
 // StartStreamInChunk implements ChunkedStreamer.
-func (s *Streamer) StartStreamInChunk(ctx context.Context, info logs.ChunkInfo) (logs.ChunkedLogStreamer, error) {
-	ctx = metadata.AppendToOutgoingContext(ctx, RemoteMetadataKeyClientName, s.clientName)
+func (s *RPCBatchEmitter) StartStreamInChunk(ctx context.Context, info ChunkInfo) (ChunkedLogStreamer, error) {
+	ctx = metadata.AppendToOutgoingContext(ctx, RPCMetadataKeyClientName, s.clientName)
 	stream, err := logspb.NewIngressServiceClient(s.conn).IngressStream(ctx)
 	if err != nil {
 		return nil, err
@@ -106,7 +105,7 @@ func (s *Streamer) StartStreamInChunk(ctx context.Context, info logs.ChunkInfo) 
 }
 
 type streamer struct {
-	info       logs.ChunkInfo
+	info       ChunkInfo
 	stream     logspb.IngressService_IngressStreamClient
 	entryCount int
 	lastNanoTS int64

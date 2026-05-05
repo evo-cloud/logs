@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
@@ -22,8 +21,8 @@ const (
 	bulkThreshold = 32
 )
 
-// Streamer streams logs to remote server.
-type Streamer struct {
+// Emitter implements logs.BatchEmitter and logs.ChunkedStreamer.
+type Emitter struct {
 	ClientName string
 	DataStream string
 	ServerURL  string
@@ -33,9 +32,9 @@ type Streamer struct {
 	traceAPI bool
 }
 
-// NewStreamer creates a Streamer.
-func NewStreamer(clientName, dataStream, serverURL string) *Streamer {
-	return &Streamer{
+// NewEmitter creates an Emitter.
+func NewEmitter(clientName, dataStream, serverURL string) *Emitter {
+	return &Emitter{
 		ClientName: clientName,
 		DataStream: dataStream,
 		ServerURL:  serverURL,
@@ -44,35 +43,21 @@ func NewStreamer(clientName, dataStream, serverURL string) *Streamer {
 	}
 }
 
-// Close closes the underlying gRPC connection.
-func (s *Streamer) Close() error {
-	return nil
+// The direct logs.LogEmitter implementation.
+func (e *Emitter) EmitLogEntry(entry *logspb.LogEntry) {
+	e.emitEntries([]*logspb.LogEntry{entry})
 }
 
-// StreamLogEntries implements logs.LogStreamer.
-func (s *Streamer) StreamLogEntries(ctx context.Context, entries []*logspb.LogEntry) error {
-	payload := &bytes.Buffer{}
-	encoder := json.NewEncoder(payload)
-	for _, entry := range entries {
-		payload.WriteString(`{"create":{}}` + "\n")
-		rec := entryToRecord(entry)
-		rec.Client = s.ClientName
-		if err := encoder.Encode(rec); err != nil {
-			return err
-		}
-	}
-	if s.traceAPI {
-		str := payload.String()
-		payload = bytes.NewBufferString(str)
-	}
-	return s.bulk(payload)
+// Emit log entries in batch.
+func (e *Emitter) EmitLogEntries(ctx context.Context, entries []*logspb.LogEntry) error {
+	return e.emitEntries(entries)
 }
 
 // StartStreamInChunk implements ChunkedStreamer.
-func (s *Streamer) StartStreamInChunk(ctx context.Context, info logs.ChunkInfo) (logs.ChunkedLogStreamer, error) {
-	st := &stream{streamer: s, info: info}
-	st.encoder = json.NewEncoder(&st.payload)
-	return st, nil
+func (e *Emitter) StartStreamInChunk(ctx context.Context, info logs.ChunkInfo) (logs.ChunkedLogStreamer, error) {
+	s := &stream{emitter: e, info: info}
+	s.encoder = json.NewEncoder(&s.payload)
+	return s, nil
 }
 
 // BulkReply defines the reply of bulk call.
@@ -99,24 +84,42 @@ type BulkError struct {
 	Reason string `json:"reason"`
 }
 
-func (s *Streamer) bulk(payload io.Reader) error {
-	req, err := http.NewRequest(http.MethodPost, s.ServerURL+"/"+s.DataStream+"/_bulk", payload)
+func (e *Emitter) emitEntries(entries []*logspb.LogEntry) error {
+	payload := &bytes.Buffer{}
+	encoder := json.NewEncoder(payload)
+	for _, entry := range entries {
+		payload.WriteString(`{"create":{}}` + "\n")
+		rec := entryToRecord(entry)
+		rec.Client = e.ClientName
+		if err := encoder.Encode(rec); err != nil {
+			return err
+		}
+	}
+	if e.traceAPI {
+		str := payload.String()
+		payload = bytes.NewBufferString(str)
+	}
+	return e.bulk(payload)
+}
+
+func (e *Emitter) bulk(payload io.Reader) error {
+	req, err := http.NewRequest(http.MethodPost, e.ServerURL+"/"+e.DataStream+"/_bulk", payload)
 	if err != nil {
 		return err
 	}
 	req.Header.Add("Content-type", "application/x-ndjson")
-	resp, err := s.Client.Do(req)
+	resp, err := e.Client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	var replyJSON string
 	var reply BulkReply
-	if data, err := ioutil.ReadAll(resp.Body); err == nil {
+	if data, err := io.ReadAll(resp.Body); err == nil {
 		replyJSON = string(data)
 		json.Unmarshal(data, &reply)
 	}
-	if s.traceAPI {
+	if e.traceAPI {
 		logs.Emergent().Infof("ES bulk reply:\n%s", string(replyJSON))
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -138,7 +141,7 @@ func (s *Streamer) bulk(payload io.Reader) error {
 }
 
 type stream struct {
-	streamer          *Streamer
+	emitter           *Emitter
 	info              logs.ChunkInfo
 	payload           bytes.Buffer
 	encoder           *json.Encoder
@@ -150,7 +153,7 @@ type stream struct {
 func (s *stream) StreamLogEntry(ctx context.Context, entry *logspb.LogEntry) error {
 	s.payload.WriteString(`{"create":{}}` + "\n")
 	rec := entryToRecord(entry)
-	rec.Client = s.streamer.ClientName
+	rec.Client = s.emitter.ClientName
 	if err := s.encoder.Encode(rec); err != nil {
 		return err
 	}
@@ -173,10 +176,10 @@ func (s *stream) flush() {
 	s.entryCount = 0
 	encodedLastNanoTS := s.lastNanoTSEncoded
 	s.lastNanoTSEncoded = 0
-	err := s.streamer.bulk(&s.payload)
+	err := s.emitter.bulk(&s.payload)
 	s.payload.Reset()
 	if err != nil {
-		if s.streamer.Verbose {
+		if s.emitter.Verbose {
 			logs.Emergent().Error(err).PrintErr("Bulk: ")
 		}
 		return

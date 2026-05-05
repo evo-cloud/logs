@@ -8,14 +8,12 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/evo-cloud/logs/go/emitters/blob"
 	"github.com/evo-cloud/logs/go/emitters/console"
-	"github.com/evo-cloud/logs/go/emitters/stackdriver"
+	"github.com/evo-cloud/logs/go/emitters/elasticsearch"
 	"github.com/evo-cloud/logs/go/logs"
-	"github.com/evo-cloud/logs/go/streamers/elasticsearch"
-	"github.com/evo-cloud/logs/go/streamers/jaeger"
-	"github.com/evo-cloud/logs/go/streamers/remote"
 )
 
 // Config defines the configuration for logging.
@@ -29,16 +27,16 @@ type Config struct {
 	BlobSync      bool
 	BlobSizeLimit int64
 
-	// ElasticSearch streamer.
+	// ElasticSearch emitter.
 	ESServerURL  string
 	ESDataStream string
 
-	// Jaeger streamer.
-	JaegerAddr string
+	// Stream server.
+	StreamAddr string
 
-	// Remote streamer.
-	RemoteAddr     string
-	RemoteInsecure bool
+	// Remote RPC server.
+	RemoteRPCAddr     string
+	RemoteRPCInsecure bool
 
 	// Chunked streaming configurations.
 	ChunkedMaxBuffer     int
@@ -80,9 +78,9 @@ func (c *Config) SetupFlagsWith(f FlagSet) {
 	f.Int64Var(&c.BlobSizeLimit, "logs-blob-sizelimit", c.BlobSizeLimit, "Blob file size limit, 0 means no limit")
 	f.StringVar(&c.ESServerURL, "logs-es-url", os.Getenv("LOGS_ES_URL"), "ElasticSearch server URL")
 	f.StringVar(&c.ESDataStream, "logs-es-datastream", os.Getenv("LOGS_ES_DATASTREAM"), "ElasticSearch data stream")
-	f.StringVar(&c.JaegerAddr, "logs-jaeger-addr", os.Getenv("LOGS_JAEGER_ADDR"), "Jaeger server address (host:port)")
-	f.StringVar(&c.RemoteAddr, "logs-remote-addr", os.Getenv("LOGS_REMOTE_ADDR"), "Remote server address (host:port)")
-	f.BoolVar(&c.RemoteInsecure, "logs-remote-insecure", false, "Remote server address is insecre")
+	f.StringVar(&c.StreamAddr, "logs-stream-addr", os.Getenv("LOGS_STREAM_ADDR"), "Remote stream server address (host:port or unix socket)")
+	f.StringVar(&c.RemoteRPCAddr, "logs-remote-rpc-addr", os.Getenv("LOGS_REMOTE_RPC_ADDR"), "Remote RPC server address (host:port)")
+	f.BoolVar(&c.RemoteRPCInsecure, "logs-remote-rpc-insecure", false, "Remote RPC server address is insecre")
 	f.IntVar(&c.ChunkedMaxBuffer, "logs-chunked-buffer-max", c.ChunkedMaxBuffer, "Logs chunked emitter: max buffer of unstreamed logs")
 	f.IntVar(&c.ChunkedMaxBatch, "logs-chunked-batch-max", c.ChunkedMaxBatch, "Logs chunked emitter: max size in one batch")
 	f.DurationVar(&c.ChunkedCollectPeriod, "logs-chunked-collect-period", c.ChunkedCollectPeriod, "Logs chunked emitter: batch period")
@@ -99,27 +97,6 @@ func (c *Config) Emitter() (logs.LogEmitter, error) {
 		emitters = append(emitters, printer)
 	case "json":
 		emitters = append(emitters, &console.Emitter{Printer: console.NewPrinter(os.Stderr), JSON: true})
-	case "stackdriver":
-		printer, err := stackdriver.NewJSONEmitter(os.Stderr, os.Getenv("LOGS_STACKDRIVER_PROJECTID"))
-		if err != nil {
-			return nil, fmt.Errorf("create Stackdriver emitter: %w", err)
-		}
-		if levelStr := os.Getenv("LOGS_STACKDRIVER_MIN_LEVEL"); levelStr != "" {
-			if printer.MinLevel, err = logs.ParseLevel(levelStr); err != nil {
-				return nil, err
-			}
-		}
-		if valStr := os.Getenv("LOGS_STACKDRIVER_MAX_VALUE_SIZE"); valStr != "" {
-			value, err := strconv.Atoi(valStr)
-			if err == nil && value <= 0 {
-				err = fmt.Errorf("non-positive")
-			}
-			if err != nil {
-				return nil, fmt.Errorf("invalid LOGS_STACKDRIVER_MAX_VALUE_SIZE %q: %w", valStr, err)
-			}
-			printer.MaxValueSize = value
-		}
-		emitters = append(emitters, printer)
 	default:
 		return nil, fmt.Errorf("unknown console printer: %s", c.ConsolePrinter)
 	}
@@ -139,38 +116,37 @@ func (c *Config) Emitter() (logs.LogEmitter, error) {
 		if c.ESDataStream == "" {
 			return nil, fmt.Errorf("streamer ElasticSearch requires data stream name")
 		}
-		s := elasticsearch.NewStreamer(c.ClientName, c.ESDataStream, c.ESServerURL)
-		s.Verbose = c.EmitterVerbose
-		emitters = append(emitters, logs.NewStreamEmitter(s))
+		emitter := elasticsearch.NewEmitter(c.ClientName, c.ESDataStream, c.ESServerURL)
+		emitter.Verbose = c.EmitterVerbose
+		emitters = append(emitters, logs.NewAsyncBatchEmitter(emitter))
 	}
 
-	if c.JaegerAddr != "" {
+	if c.StreamAddr != "" {
 		if c.ClientName == "" {
-			return nil, fmt.Errorf("streamer Jaeger requires client name")
+			return nil, fmt.Errorf("streamer Remote requires client name")
 		}
-		reporter, err := jaeger.New(c.ClientName, c.JaegerAddr, nil)
+		emitter, err := logs.NewStreamBatchEmitter(c.ClientName, "", c.StreamAddr)
 		if err != nil {
-			return nil, fmt.Errorf("streamer Jaeger creation error: %w", err)
+			return nil, fmt.Errorf("streamer Remote creation error: %w", err)
 		}
-		chunkedEmitter := logs.NewChunkedEmitter(reporter, c.ChunkedMaxBuffer, c.ChunkedMaxBatch)
-		chunkedEmitter.CollectPeriod = c.ChunkedCollectPeriod
-		emitters = append(emitters, chunkedEmitter)
+		emitter.Verbose = c.EmitterVerbose
+		emitters = append(emitters, logs.NewAsyncBatchEmitter(emitter))
 	}
 
-	if c.RemoteAddr != "" {
+	if c.RemoteRPCAddr != "" {
 		if c.ClientName == "" {
 			return nil, fmt.Errorf("streamer Remote requires client name")
 		}
 		var opts []grpc.DialOption
-		if c.RemoteInsecure {
-			opts = append(opts, grpc.WithInsecure())
+		if c.RemoteRPCInsecure {
+			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		}
-		streamer, err := remote.NewStreamer(c.ClientName, c.RemoteAddr, opts...)
+		emitter, err := logs.NewRPCBatchEmitter(c.ClientName, c.RemoteRPCAddr, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("streamer Remote creation error: %w", err)
 		}
-		streamer.Verbose = c.EmitterVerbose
-		emitters = append(emitters, logs.NewStreamEmitter(streamer))
+		emitter.Verbose = c.EmitterVerbose
+		emitters = append(emitters, logs.NewAsyncBatchEmitter(emitter))
 	}
 
 	if len(emitters) == 1 {

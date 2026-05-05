@@ -10,7 +10,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 
 	"github.com/evo-cloud/logs/go/emitters/console"
 	"github.com/evo-cloud/logs/go/source"
@@ -94,7 +94,7 @@ func runCat(cmd *cobra.Command, args []string) error {
 		printer.ShortenTraceID = false
 	}
 	if catColorful {
-		if terminal.IsTerminal(int(os.Stdout.Fd())) {
+		if term.IsTerminal(int(os.Stdout.Fd())) {
 			printer.UseColor(true)
 		}
 	}

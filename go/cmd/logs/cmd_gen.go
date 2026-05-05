@@ -24,7 +24,7 @@ var (
 	genExitInstantly = false
 )
 
-func genLogAttrs(r *rand.Rand, attrSet map[string]interface{}) logs.AttributeSetter {
+func genLogAttrs(r *rand.Rand, attrSet map[string]any) logs.AttributeSetter {
 	var setters logs.AttributeSetters
 	for key, val := range attrSet {
 		switch val.(type) {
@@ -47,9 +47,9 @@ func runGen(cmd *cobra.Command, args []string) error {
 	avgDelayNS := int64(6e10) / int64(genRatePerMinute)
 	avgDelayDrift := avgDelayNS / 2
 
-	attrSets := make([]map[string]interface{}, genNumAttrSets)
+	attrSets := make([]map[string]any, genNumAttrSets)
 	for n := range attrSets {
-		attrSet := make(map[string]interface{})
+		attrSet := make(map[string]any)
 		attrSets[n] = attrSet
 		for m := 0; m < genNumAttrs+r.Intn(genNumAttrs*2/10)-genNumAttrs/10; m++ {
 			key := fake.Word()

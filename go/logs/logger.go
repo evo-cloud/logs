@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand"
 	"os"
 	"runtime"
@@ -49,10 +50,11 @@ type ErrorFilter func(err error) bool
 type Logger struct {
 	ErrorFilter ErrorFilter
 
-	emitter LogEmitter
-	parent  *Logger
-	span    *SpanInfo
-	attrs   map[string]*logspb.Value
+	emitter     LogEmitter
+	parent      *Logger
+	span        *SpanInfo
+	attrs       map[string]*logspb.Value
+	instruments []func()
 }
 
 // LogPrinter prepares and prints a single log message.
@@ -103,6 +105,20 @@ type NamedAttribute struct {
 // SetAttributes implements AttributeSetter.
 func (a NamedAttribute) SetAttributes(attrs map[string]*logspb.Value) {
 	attrs[a.Name] = a.Value
+}
+
+// A plugin to instrument a log span.
+type SpanInstrument interface {
+	// Invoked when a span starts or the plugin is activated.
+	// It returns a func to be called when the span ends.
+	InstrumentSpan(l *Logger) func()
+}
+
+// The func implementation of SpanInstrument.
+type SpanInstrumentFunc func(l *Logger) func()
+
+func (f SpanInstrumentFunc) InstrumentSpan(l *Logger) func() {
+	return f(l)
 }
 
 // Use returns the logger associated with the context.
@@ -190,7 +206,7 @@ func ProtoJSON(name string, msg proto.Message) AttributeSetter {
 }
 
 // JSON creates an attribute with value in a JSON string.
-func JSON(name string, val interface{}) AttributeSetter {
+func JSON(name string, val any) AttributeSetter {
 	encoded, err := json.Marshal(val)
 	if err != nil {
 		panic(err)
@@ -353,9 +369,7 @@ func (l *Logger) New(attrs ...AttributeSetter) *Logger {
 		span:        l.span,
 		attrs:       make(map[string]*logspb.Value),
 	}
-	for k, v := range l.attrs {
-		c.attrs[k] = v
-	}
+	maps.Copy(c.attrs, l.attrs)
 	return c.SetAttrs(attrs...)
 }
 
@@ -413,6 +427,9 @@ func (l *Logger) StartSpanDepth(depth int, info SpanInfo, attrs ...AttributeSett
 
 // EndSpanDepth ends a span and returns the parent logger.
 func (l *Logger) EndSpanDepth(depth int) *Logger {
+	for _, ins := range l.instruments {
+		ins()
+	}
 	if l.span == nil {
 		return l
 	}
@@ -441,6 +458,15 @@ func (l *Logger) EndSpan() *Logger {
 // End is an alias of EndSpan to be compatible with standard Span in tracing API.
 func (l *Logger) End() {
 	l.EndSpanDepth(1)
+}
+
+// Add instrumentation to the span.
+// It must be used right after the span is started (e.g. chained after StartSpan).
+func (l *Logger) Instrument(instruments ...SpanInstrument) *Logger {
+	for _, ins := range instruments {
+		l.instruments = append(l.instruments, ins.InstrumentSpan(l))
+	}
+	return l
 }
 
 // NewContext creates a context with current logger.

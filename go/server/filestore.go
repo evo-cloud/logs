@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
+	"github.com/evo-cloud/logs/go/logs"
 )
 
 const (
@@ -73,6 +74,14 @@ func NewFileStore(baseDir string) *FileStore {
 
 // WriteBatch starts write a batch of logs.
 func (s *FileStore) WriteBatch(ctx context.Context, name string) (BatchWriter, error) {
+	return s.writerByName(name), nil
+}
+
+func (s *FileStore) WriteStream(ctx context.Context, name string) (logs.LogEmitter, error) {
+	return s.writerByName(name), nil
+}
+
+func (s *FileStore) writerByName(name string) *fileBatchWriterRef {
 	s.writersLock.Lock()
 	defer s.writersLock.Unlock()
 	w := s.writers[name]
@@ -81,7 +90,7 @@ func (s *FileStore) WriteBatch(ctx context.Context, name string) (BatchWriter, e
 		s.writers[name] = w
 	}
 	atomic.AddInt32(&w.ref, 1)
-	return &fileBatchWriterRef{fileBatchWriter: w}, nil
+	return &fileBatchWriterRef{fileBatchWriter: w}
 }
 
 func (w *fileBatchWriterRef) WriteLogEntry(ctx context.Context, entry *logspb.LogEntry) error {
@@ -90,6 +99,12 @@ func (w *fileBatchWriterRef) WriteLogEntry(ctx context.Context, entry *logspb.Lo
 		return ErrWriterClosed
 	}
 	return writer.writeLogEntry(entry)
+}
+
+func (w *fileBatchWriterRef) EmitLogEntry(entry *logspb.LogEntry) {
+	if writer := w.fileBatchWriter; writer != nil {
+		w.writeLogEntry(entry)
+	}
 }
 
 func (w *fileBatchWriterRef) Close() error {

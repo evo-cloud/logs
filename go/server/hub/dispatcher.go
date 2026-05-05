@@ -18,13 +18,28 @@ type Dispatcher struct {
 	Emitter logs.LogEmitter
 
 	connsLock sync.RWMutex
-	conns     map[net.Conn]struct{}
+	conns     map[*connWriter]struct{}
 }
 
 type batchWriter struct {
 	*Dispatcher
-	conns  []net.Conn
-	lenBuf [4]byte
+	conns []*connWriter
+}
+
+type connWriter struct {
+	lock sync.Mutex
+	conn net.Conn
+}
+
+func (w *connWriter) write(bufs ...[]byte) error {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	for _, buf := range bufs {
+		if _, err := w.conn.Write(buf); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Dispatcher) Serve(ln net.Listener) error {
@@ -34,7 +49,7 @@ func (d *Dispatcher) Serve(ln net.Listener) error {
 		d.conns = nil
 		d.connsLock.Unlock()
 		for conn := range conns {
-			conn.Close()
+			conn.conn.Close()
 		}
 		ln.Close()
 	}()
@@ -44,18 +59,19 @@ func (d *Dispatcher) Serve(ln net.Listener) error {
 		if err != nil {
 			return err
 		}
+		w := &connWriter{conn: conn}
 		d.connsLock.Lock()
 		if d.conns == nil {
-			d.conns = make(map[net.Conn]struct{})
+			d.conns = make(map[*connWriter]struct{})
 		}
-		d.conns[conn] = struct{}{}
+		d.conns[w] = struct{}{}
 		d.connsLock.Unlock()
 		go func(conn net.Conn) {
 			_, log := logs.StartSpan(ctx, "Serve", logs.Str("remote-addr", conn.RemoteAddr().String()))
 			defer log.EndSpan()
 			defer func() {
 				d.connsLock.Lock()
-				delete(d.conns, conn)
+				delete(d.conns, w)
 				d.connsLock.Unlock()
 			}()
 			var buf [1]byte
@@ -72,12 +88,38 @@ func (d *Dispatcher) Serve(ln net.Listener) error {
 func (d *Dispatcher) WriteBatch(ctx context.Context, name string) (server.BatchWriter, error) {
 	w := &batchWriter{Dispatcher: d}
 	d.connsLock.RLock()
-	w.conns = make([]net.Conn, 0, len(d.conns))
+	w.conns = make([]*connWriter, 0, len(d.conns))
 	for conn := range d.conns {
 		w.conns = append(w.conns, conn)
 	}
 	d.connsLock.RUnlock()
 	return w, nil
+}
+
+func (d *Dispatcher) WriteStream(ctx context.Context, name string) (logs.LogEmitter, error) {
+	return d, nil
+}
+
+func (d *Dispatcher) EmitLogEntry(entry *logspb.LogEntry) {
+	if emitter := d.Emitter; emitter != nil {
+		emitter.EmitLogEntry(entry)
+	}
+	d.connsLock.RLock()
+	n := len(d.conns)
+	d.connsLock.RUnlock()
+	if n == 0 {
+		return
+	}
+
+	lenBuf, data, err := encodeLogEntry(entry)
+	if err != nil {
+		return
+	}
+	d.connsLock.RLock()
+	for conn := range d.conns {
+		conn.write(lenBuf, data)
+	}
+	d.connsLock.RUnlock()
 }
 
 func (w *batchWriter) WriteLogEntry(ctx context.Context, entry *logspb.LogEntry) error {
@@ -87,18 +129,26 @@ func (w *batchWriter) WriteLogEntry(ctx context.Context, entry *logspb.LogEntry)
 	if len(w.conns) == 0 {
 		return nil
 	}
-	entryPb, err := proto.Marshal(entry)
+
+	lenBuf, data, err := encodeLogEntry(entry)
 	if err != nil {
 		return err
 	}
-	binary.BigEndian.PutUint32(w.lenBuf[:], uint32(len(entryPb)))
 	for _, conn := range w.conns {
-		conn.Write(w.lenBuf[:])
-		conn.Write(entryPb)
+		conn.write(lenBuf, data)
 	}
 	return nil
 }
 
 func (w *batchWriter) Close() error {
 	return nil
+}
+
+func encodeLogEntry(entry *logspb.LogEntry) (lenBuf, data []byte, err error) {
+	if data, err = proto.Marshal(entry); err != nil {
+		return
+	}
+	lenBuf = make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
+	return
 }

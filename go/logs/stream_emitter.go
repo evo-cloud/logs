@@ -1,84 +1,121 @@
 package logs
 
 import (
-	"container/list"
 	"context"
+	"encoding/binary"
+	"net"
+	"strings"
 	"sync"
-	"sync/atomic"
 
 	logspb "github.com/evo-cloud/logs/go/gen/proto/logs"
+	"google.golang.org/protobuf/proto"
 )
 
-// LogStreamer streams log entries.
-type LogStreamer interface {
-	StreamLogEntries(ctx context.Context, entries []*logspb.LogEntry) error
+// Emit batch of log entries to remote stream server.
+type StreamBatchEmitter struct {
+	Verbose bool
+	Dialer  StreamDialer
+
+	clientName string
+	network    string
+	address    string
+
+	connLock sync.Mutex
+	conn     net.Conn
 }
 
-// StreamEmitter simply emits collected logs.
-type StreamEmitter struct {
-	Streamer LogStreamer
-
-	emitCh  chan struct{}
-	workers int32
-
-	lock    sync.Mutex
-	entries *list.List
+type StreamDialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-// NewStreamEmitter creates a StreamEmitter.
-func NewStreamEmitter(streamer LogStreamer) *StreamEmitter {
-	return &StreamEmitter{
-		Streamer: streamer,
-		emitCh:   make(chan struct{}, 1),
-		entries:  list.New(),
-	}
-}
-
-// EmitLogEntry implements LogEmitter.
-func (e *StreamEmitter) EmitLogEntry(entry *logspb.LogEntry) {
-	if atomic.LoadInt32(&e.workers) == 0 {
-		go e.runWorker(context.Background())
-	}
-	e.lock.Lock()
-	e.entries.PushBack(entry)
-	e.lock.Unlock()
-	select {
-	case e.emitCh <- struct{}{}:
-	default:
-	}
-}
-
-func (e *StreamEmitter) runWorker(ctx context.Context) {
-	defer func() {
-		atomic.AddInt32(&e.workers, -1)
-	}()
-	if atomic.AddInt32(&e.workers, 1) > 1 {
-		return
-	}
-	for {
-		e.emitEntries(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-e.emitCh:
+// NewStreamBatchEmitter creates a StreamBatchEmitter.
+func NewStreamBatchEmitter(clientName, network, address string) (*StreamBatchEmitter, error) {
+	if network == "" {
+		if strings.HasPrefix(address, "/") || strings.HasPrefix(address, "@") {
+			network = "unix"
+		} else {
+			network = "tcp"
 		}
 	}
+	return &StreamBatchEmitter{
+		Dialer:     &net.Dialer{},
+		clientName: clientName,
+		network:    network,
+		address:    address,
+	}, nil
 }
 
-func (e *StreamEmitter) emitEntries(ctx context.Context) {
-	e.lock.Lock()
-	entryList := e.entries
-	e.entries = list.New()
-	e.lock.Unlock()
-	if entryList.Len() == 0 {
-		return
-	}
-	entries := make([]*logspb.LogEntry, 0, entryList.Len())
-	for elem := entryList.Front(); elem != nil; elem = elem.Next() {
-		entries = append(entries, elem.Value.(*logspb.LogEntry))
-	}
+// Close closes the underlying gRPC connection.
+func (s *StreamBatchEmitter) Close() error {
+	s.connLock.Lock()
+	defer s.connLock.Unlock()
+	s.close()
+	return nil
+}
 
-	if err := e.Streamer.StreamLogEntries(ctx, entries); err != nil {
-		Emergent().Error(err).PrintErr("Stream: ")
+func (s *StreamBatchEmitter) EmitLogEntries(ctx context.Context, entries []*logspb.LogEntry) error {
+	s.connLock.Lock()
+	defer s.connLock.Unlock()
+
+	for _, entry := range entries {
+		data, err := proto.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		if err := s.tryConnect(ctx); err != nil {
+			return err
+		}
+		if err := s.write(data); err == nil {
+			continue
+		}
+		if err := s.tryConnect(ctx); err != nil {
+			return err
+		}
+		if err := s.write(data); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (s *StreamBatchEmitter) tryConnect(ctx context.Context) error {
+	if s.conn != nil {
+		return nil
+	}
+	conn, err := s.Dialer.DialContext(ctx, s.network, s.address)
+	if err != nil {
+		if s.Verbose {
+			return Emergent().Error(err).PrintErrf("Stream tryConnect %s: ", s.address)
+		}
+		return err
+	}
+	s.conn = conn
+	return s.write([]byte(s.clientName))
+}
+
+func (s *StreamBatchEmitter) close() {
+	if s.conn != nil {
+		s.conn.Close()
+		s.conn = nil
+	}
+}
+
+func (s *StreamBatchEmitter) write(data []byte) error {
+	lenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
+	if _, err := s.conn.Write(lenBuf); err != nil {
+		s.close()
+		if s.Verbose {
+			return Emergent().Error(err).PrintErrf("Stream write %s: ", s.address)
+		}
+		return err
+	}
+	if _, err := s.conn.Write(data); err != nil {
+		s.close()
+		if s.Verbose {
+			return Emergent().Error(err).PrintErrf("Stream write %s: ", s.address)
+		}
+		return err
+	}
+	return nil
 }
