@@ -13,6 +13,7 @@ import (
 	"github.com/evo-cloud/logs/go/emitters/blob"
 	"github.com/evo-cloud/logs/go/emitters/console"
 	"github.com/evo-cloud/logs/go/emitters/elasticsearch"
+	"github.com/evo-cloud/logs/go/emitters/otlp"
 	"github.com/evo-cloud/logs/go/logs"
 )
 
@@ -30,6 +31,12 @@ type Config struct {
 	// ElasticSearch emitter.
 	ESServerURL  string
 	ESDataStream string
+
+	// OpenTelemetry (OTLP) log emitter.
+	OTLPEndpoint      string
+	OTLPAuthToken     string
+	OTLPAuthTokenType string
+	OTLPStream        string
 
 	// Stream server.
 	StreamAddr string
@@ -78,6 +85,10 @@ func (c *Config) SetupFlagsWith(f FlagSet) {
 	f.Int64Var(&c.BlobSizeLimit, "logs-blob-sizelimit", c.BlobSizeLimit, "Blob file size limit, 0 means no limit")
 	f.StringVar(&c.ESServerURL, "logs-es-url", os.Getenv("LOGS_ES_URL"), "ElasticSearch server URL")
 	f.StringVar(&c.ESDataStream, "logs-es-datastream", os.Getenv("LOGS_ES_DATASTREAM"), "ElasticSearch data stream")
+	f.StringVar(&c.OTLPEndpoint, "logs-otlp-endpoint", os.Getenv("LOGS_OTLP_ENDPOINT"), "OpenTelemetry OTLP logs endpoint URL (e.g., http://localhost:5080/api/default/v1/logs)")
+	f.StringVar(&c.OTLPAuthToken, "logs-otlp-auth-token", os.Getenv("LOGS_OTLP_AUTH_TOKEN"), "OTLP endpoint auth token")
+	f.StringVar(&c.OTLPAuthTokenType, "logs-otlp-auth-token-type", "", "OTLP endpoint auth token type. Default is Bearer.")
+	f.StringVar(&c.OTLPStream, "logs-otlp-stream", os.Getenv("LOGS_OTLP_STREAM"), "Optional 'stream-name' header value (e.g., for OpenObserve)")
 	f.StringVar(&c.StreamAddr, "logs-stream-addr", os.Getenv("LOGS_STREAM_ADDR"), "Remote stream server address (host:port or unix socket)")
 	f.StringVar(&c.RemoteRPCAddr, "logs-remote-rpc-addr", os.Getenv("LOGS_REMOTE_RPC_ADDR"), "Remote RPC server address (host:port)")
 	f.BoolVar(&c.RemoteRPCInsecure, "logs-remote-rpc-insecure", false, "Remote RPC server address is insecre")
@@ -117,6 +128,19 @@ func (c *Config) Emitter() (logs.LogEmitter, error) {
 			return nil, fmt.Errorf("streamer ElasticSearch requires data stream name")
 		}
 		emitter := elasticsearch.NewEmitter(c.ClientName, c.ESDataStream, c.ESServerURL)
+		emitter.Verbose = c.EmitterVerbose
+		emitters = append(emitters, logs.NewAsyncBatchEmitter(emitter))
+	}
+
+	if c.OTLPEndpoint != "" {
+		opts := []otlp.Option{otlp.WithEndpoint(c.OTLPEndpoint)}
+		if c.OTLPAuthToken != "" {
+			opts = append(opts, otlp.WithAuthToken(c.OTLPAuthToken, c.OTLPAuthTokenType))
+		}
+		if c.OTLPStream != "" {
+			opts = append(opts, otlp.WithStreamName(c.OTLPStream))
+		}
+		emitter := otlp.NewEmitter(c.ClientName, opts...)
 		emitter.Verbose = c.EmitterVerbose
 		emitters = append(emitters, logs.NewAsyncBatchEmitter(emitter))
 	}
