@@ -98,12 +98,12 @@ func (c *Config) SetupFlagsWith(f FlagSet) {
 	f.Func("logs-otlp-header", "OTLP extra headers Header: VALUE", func(val string) error {
 		items := strings.SplitN(val, ":", 2)
 		if len(items) != 2 {
-			return fmt.Errorf("invalid header %q, expect Header: VALUE")
+			return fmt.Errorf("invalid header %q, expect Header: VALUE", val)
 		}
 		header := http.CanonicalHeaderKey(items[0])
 		value := strings.TrimSpace(items[1])
 		if header == "" || value == "" {
-			return fmt.Errorf("invalid header %q, expect Header: VALUE")
+			return fmt.Errorf("invalid header %q, expect Header: VALUE", val)
 		}
 		if c.OTLPHeaders == nil {
 			c.OTLPHeaders = make(http.Header)
