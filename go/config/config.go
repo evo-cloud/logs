@@ -3,8 +3,10 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -36,7 +38,9 @@ type Config struct {
 	OTLPEndpoint      string
 	OTLPAuthToken     string
 	OTLPAuthTokenType string
-	OTLPStream        string
+	OTLPLogsPath      string
+	OTLPTracePath     string
+	OTLPHeaders       http.Header
 
 	// Stream server.
 	StreamAddr string
@@ -60,6 +64,7 @@ type FlagSet interface {
 	Int64Var(*int64, string, int64, string)
 	IntVar(*int, string, int, string)
 	DurationVar(*time.Duration, string, time.Duration, string)
+	Func(name, usage string, fn func(string) error)
 }
 
 // Default creates a default configuration.
@@ -85,10 +90,27 @@ func (c *Config) SetupFlagsWith(f FlagSet) {
 	f.Int64Var(&c.BlobSizeLimit, "logs-blob-sizelimit", c.BlobSizeLimit, "Blob file size limit, 0 means no limit")
 	f.StringVar(&c.ESServerURL, "logs-es-url", os.Getenv("LOGS_ES_URL"), "ElasticSearch server URL")
 	f.StringVar(&c.ESDataStream, "logs-es-datastream", os.Getenv("LOGS_ES_DATASTREAM"), "ElasticSearch data stream")
-	f.StringVar(&c.OTLPEndpoint, "logs-otlp-endpoint", os.Getenv("LOGS_OTLP_ENDPOINT"), "OpenTelemetry OTLP logs endpoint URL (e.g., http://localhost:5080/api/default/v1/logs)")
+	f.StringVar(&c.OTLPEndpoint, "logs-otlp-endpoint", os.Getenv("LOGS_OTLP_ENDPOINT"), "OpenTelemetry OTLP logs endpoint URL (e.g., http://localhost:4318)")
 	f.StringVar(&c.OTLPAuthToken, "logs-otlp-auth-token", os.Getenv("LOGS_OTLP_AUTH_TOKEN"), "OTLP endpoint auth token")
 	f.StringVar(&c.OTLPAuthTokenType, "logs-otlp-auth-token-type", "", "OTLP endpoint auth token type. Default is Bearer.")
-	f.StringVar(&c.OTLPStream, "logs-otlp-stream", os.Getenv("LOGS_OTLP_STREAM"), "Optional 'stream-name' header value (e.g., for OpenObserve)")
+	f.StringVar(&c.OTLPLogsPath, "logs-otlp-api-logs-path", "", "OTLP Logs API path, default is /api/logs. Specify - to disable log collection.")
+	f.StringVar(&c.OTLPTracePath, "logs-otlp-api-trace-path", "", "OTLP Trace API path, default is /api/trace. Specify - to disable trace collection.")
+	f.Func("logs-otlp-header", "OTLP extra headers Header: VALUE", func(val string) error {
+		items := strings.SplitN(val, ":", 2)
+		if len(items) != 2 {
+			return fmt.Errorf("invalid header %q, expect Header: VALUE")
+		}
+		header := http.CanonicalHeaderKey(items[0])
+		value := strings.TrimSpace(items[1])
+		if header == "" || value == "" {
+			return fmt.Errorf("invalid header %q, expect Header: VALUE")
+		}
+		if c.OTLPHeaders == nil {
+			c.OTLPHeaders = make(http.Header)
+		}
+		c.OTLPHeaders.Add(header, value)
+		return nil
+	})
 	f.StringVar(&c.StreamAddr, "logs-stream-addr", os.Getenv("LOGS_STREAM_ADDR"), "Remote stream server address (host:port or unix socket)")
 	f.StringVar(&c.RemoteRPCAddr, "logs-remote-rpc-addr", os.Getenv("LOGS_REMOTE_RPC_ADDR"), "Remote RPC server address (host:port)")
 	f.BoolVar(&c.RemoteRPCInsecure, "logs-remote-rpc-insecure", false, "Remote RPC server address is insecre")
@@ -137,11 +159,23 @@ func (c *Config) Emitter() (logs.LogEmitter, error) {
 		if c.OTLPAuthToken != "" {
 			opts = append(opts, otlp.WithAuthToken(c.OTLPAuthToken, c.OTLPAuthTokenType))
 		}
-		if c.OTLPStream != "" {
-			opts = append(opts, otlp.WithStreamName(c.OTLPStream))
-		}
 		emitter := otlp.NewEmitter(c.ClientName, opts...)
 		emitter.Verbose = c.EmitterVerbose
+		if c.OTLPLogsPath != "" {
+			if c.OTLPLogsPath == "-" {
+				emitter.LogsPath = ""
+			} else {
+				emitter.LogsPath = c.OTLPLogsPath
+			}
+		}
+		if c.OTLPTracePath != "" {
+			if c.OTLPTracePath == "-" {
+				emitter.TracePath = ""
+			} else {
+				emitter.TracePath = c.OTLPTracePath
+			}
+		}
+		emitter.ExtraHeaders = c.OTLPHeaders
 		emitters = append(emitters, logs.NewAsyncBatchEmitter(emitter))
 	}
 

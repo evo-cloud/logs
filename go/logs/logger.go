@@ -66,6 +66,7 @@ type LogPrinter struct {
 
 // SpanInfo provides detailed information of a span.
 type SpanInfo struct {
+	Time    int64
 	Name    string
 	Kind    logspb.Span_Kind
 	Context *logspb.SpanContext
@@ -413,6 +414,7 @@ func (l *Logger) StartSpanDepth(depth int, info SpanInfo, attrs ...AttributeSett
 		c.span.Context.SpanId = NewSpanID()
 	}
 	entry := c.makeEntry(depth + 1)
+	c.span.Time = entry.GetNanoTs()
 	entry.Trace.Event = &logspb.Trace_SpanStart_{
 		SpanStart: &logspb.Trace_SpanStart{
 			Name:  c.span.Name,
@@ -435,7 +437,14 @@ func (l *Logger) EndSpanDepth(depth int) *Logger {
 	}
 	entry := l.makeEntry(depth + 1)
 	entry.Trace.Event = &logspb.Trace_SpanEnd_{
-		SpanEnd: &logspb.Trace_SpanEnd{},
+		SpanEnd: &logspb.Trace_SpanEnd{
+			Start: &logspb.Trace_SpanStart{
+				Name:  l.span.Name,
+				Kind:  l.span.Kind,
+				Links: l.span.AllLinks(),
+			},
+			StartNs: l.span.Time,
+		},
 	}
 	entry.Message = fmt.Sprintf("SPAN_END %s", l.span)
 	l.emit(entry, nil)

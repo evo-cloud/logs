@@ -3,16 +3,20 @@ package otlp
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 
-	cpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	collogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	otlpcommon "go.opentelemetry.io/proto/otlp/common/v1"
 	otlplogs "go.opentelemetry.io/proto/otlp/logs/v1"
 	otlpresource "go.opentelemetry.io/proto/otlp/resource/v1"
+	otlptrace "go.opentelemetry.io/proto/otlp/trace/v1"
 	"golang.org/x/oauth2"
 	"google.golang.org/protobuf/proto"
 
@@ -26,52 +30,74 @@ const (
 
 	// contentTypeProto is the OpenTelemetry protobuf HTTP content type.
 	contentTypeProto = "application/x-protobuf"
+
+	maxResponseBody = 4096
 )
 
 // Emitter implements logs.BatchEmitter and logs.ChunkedStreamer.
 // It exports logs via the OpenTelemetry Protocol (OTLP) logs API as protobuf.
 type Emitter struct {
-	Endpoint   string
-	Token      oauth2.TokenSource
-	ClientName string
-	Client     *http.Client
-	Verbose    bool
+	// The base endpoint URL.
+	Endpoint string
 
-	streamName   string
-	extraHeaders http.Header
-	traceAPI     bool
+	// The path to be appended to the Endpoint URL for logs.
+	// If this is empty, log exporting is disabled.
+	// If the path is already included in the Endpoint URL, set this to "/".
+	LogsPath string
+
+	// The path to be appended to the Endpoint URL for traces.
+	// If this is empty, trace exporting is disabled.
+	// If the path is already included in the Endpoint URL, set this to "/".
+	TracePath string
+
+	// The authentication for the endpoint.
+	Token oauth2.TokenSource
+
+	// The HTTP client for calling the endpoint.
+	// If unspecified, http.DefaultClient will be used.
+	Client *http.Client
+
+	// Extra headers to be appended.
+	ExtraHeaders http.Header
+
+	// If specified, errors are logged.
+	ErrorLogger *logs.Logger
+
+	Verbose bool
+
+	resource *otlpresource.Resource
 }
 
 // Option customizes an Emitter.
 type Option func(*Emitter)
 
-// WithEndpoint overrides the OTLP endpoint URL (e.g. "http://localhost:4318" or the full API path).
+// Specify the OTLP endpoint URL (e.g. "http://localhost:4318" or the full API path).
 func WithEndpoint(url string) Option {
 	return func(e *Emitter) { e.Endpoint = url }
 }
 
-// WithToken sets the HTTP Authorization header.
+// Set the HTTP Authorization header.
 func WithAuthToken(token, tokenType string) Option {
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: tokenType})
 	return func(e *Emitter) { e.Token = tokenSource }
 }
 
-// WithStreamName sets the optional "stream-name" header (e.g. for OpenObserve).
-func WithStreamName(name string) Option {
-	return func(e *Emitter) { e.streamName = name }
+// Specify the HTTP client.
+func WithClient(client *http.Client) Option {
+	return func(e *Emitter) { e.Client = client }
 }
 
-// WithExtraHeaders adds additional headers to every request.
+// Add additional headers to every request.
 func WithExtraHeaders(h http.Header) Option {
 	return func(e *Emitter) {
 		if h == nil {
 			return
 		}
-		if e.extraHeaders == nil {
-			e.extraHeaders = make(http.Header)
+		if e.ExtraHeaders == nil {
+			e.ExtraHeaders = make(http.Header)
 		}
 		for k, v := range h {
-			e.extraHeaders[k] = append(e.extraHeaders[k], v...)
+			e.ExtraHeaders[k] = append(e.ExtraHeaders[k], v...)
 		}
 	}
 }
@@ -79,10 +105,29 @@ func WithExtraHeaders(h http.Header) Option {
 // NewEmitter creates an Emitter.
 func NewEmitter(clientName string, opts ...Option) *Emitter {
 	e := &Emitter{
-		Endpoint:   os.Getenv("OTLP_LOGS_ENDPOINT"),
-		ClientName: clientName,
-		Client:     http.DefaultClient,
-		traceAPI:   os.Getenv("OTLP_TRACE_API") != "",
+		Endpoint:  os.Getenv("OTLP_ENDPOINT"),
+		LogsPath:  os.Getenv("OTLP_API_LOGS_PATH"),
+		TracePath: os.Getenv("OTLP_API_TRACE_PATH"),
+		resource: &otlpresource.Resource{
+			Attributes: []*otlpcommon.KeyValue{
+				{Key: "client", Value: &otlpcommon.AnyValue{Value: &otlpcommon.AnyValue_StringValue{StringValue: clientName}}},
+			},
+		},
+	}
+	switch e.LogsPath {
+	case "":
+		e.LogsPath = "/v1/logs"
+	case "-":
+		e.LogsPath = ""
+	}
+	switch e.TracePath {
+	case "":
+		e.TracePath = "/v1/traces"
+	case "-":
+		e.TracePath = ""
+	}
+	if os.Getenv("OTLP_LOG_ERROR") != "" {
+		e.ErrorLogger = logs.Emergent()
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -107,39 +152,24 @@ func (e *Emitter) StartStreamInChunk(ctx context.Context, info logs.ChunkInfo) (
 }
 
 func (e *Emitter) emitEntries(ctx context.Context, entries []*logspb.LogEntry) error {
-	var records []*otlplogs.LogRecord
-	for _, entry := range entries {
-		records = append(records, entryToLogRecord(entry))
+	col := &collector{
+		collectLogs:  e.LogsPath != "",
+		collectTrace: e.TracePath != "",
 	}
-	req := &cpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otlplogs.ResourceLogs{
-			{
-				Resource:  &otlpresource.Resource{Attributes: e.resourceAttrs()},
-				ScopeLogs: []*otlplogs.ScopeLogs{{LogRecords: records}},
-			},
-		},
-	}
-	payload, err := proto.Marshal(req)
-	if err != nil {
-		return err
-	}
-	return e.send(ctx, payload)
+	col.collect(entries...)
+	return col.flush(ctx, e)
 }
 
-// resourceAttrs returns the resource-level attributes for the emitter.
-func (e *Emitter) resourceAttrs() []*otlpcommon.KeyValue {
-	var attrs []*otlpcommon.KeyValue
-	if e.ClientName != "" {
-		attrs = append(attrs, &otlpcommon.KeyValue{Key: "client", Value: &otlpcommon.AnyValue{Value: &otlpcommon.AnyValue_StringValue{StringValue: e.ClientName}}})
-	}
-	return attrs
-}
-
-func (e *Emitter) send(ctx context.Context, payload []byte) error {
+func (e *Emitter) send(ctx context.Context, path string, msg proto.Message) error {
 	if e.Endpoint == "" {
 		return fmt.Errorf("otlp emitter: endpoint not set")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.Endpoint, bytes.NewReader(payload))
+	payload, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("encode payload: %w", err)
+	}
+	fullURL := strings.TrimRight(e.Endpoint, "/") + "/" + strings.TrimLeft(path, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -151,116 +181,162 @@ func (e *Emitter) send(ctx context.Context, payload []byte) error {
 		}
 		token.SetAuthHeader(req)
 	}
-	if e.streamName != "" {
-		req.Header.Set("stream-name", e.streamName)
-	}
-	for k, v := range e.extraHeaders {
+	for k, v := range e.ExtraHeaders {
 		for _, vv := range v {
 			req.Header.Add(k, vv)
 		}
 	}
-	resp, err := e.Client.Do(req)
+	client := e.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return err
 	}
-	if e.traceAPI {
-		logs.Emergent().Infof("OTLP logs reply: %d %s", resp.StatusCode, string(body))
+	if e.Verbose {
+		logs.Emergent().Infof("OTLP reply: %d %s", resp.StatusCode, string(body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("otlp emitter: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		err := fmt.Errorf("otlp emitter: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		if l := e.ErrorLogger; l != nil {
+			l.Error(err).PrintErr("OTLP send: ")
+		}
+		return err
 	}
 	return nil
 }
 
+type collector struct {
+	collectLogs  bool
+	collectTrace bool
+	logs         []*otlplogs.LogRecord
+	spans        []*otlptrace.Span
+	lastTs       int64
+}
+
+func (c *collector) collect(entries ...*logspb.LogEntry) {
+	for _, entry := range entries {
+		tr := entry.GetTrace()
+		if start := tr.GetSpanEnd().GetStart(); start != nil && c.collectTrace {
+			span := &otlptrace.Span{
+				TraceId:           tr.GetSpanContext().GetTraceId(),
+				SpanId:            spanIDFrom(tr.GetSpanContext().GetSpanId()),
+				Name:              start.GetName(),
+				StartTimeUnixNano: uint64(tr.GetSpanEnd().GetStartNs()),
+				EndTimeUnixNano:   uint64(entry.GetNanoTs()),
+			}
+			switch start.GetKind() {
+			case logspb.Span_INTERNAL:
+				span.Kind = otlptrace.Span_SPAN_KIND_INTERNAL
+			case logspb.Span_SERVER:
+				span.Kind = otlptrace.Span_SPAN_KIND_SERVER
+			case logspb.Span_CLIENT:
+				span.Kind = otlptrace.Span_SPAN_KIND_CLIENT
+			case logspb.Span_PRODUCER:
+				span.Kind = otlptrace.Span_SPAN_KIND_PRODUCER
+			case logspb.Span_CONSUMER:
+				span.Kind = otlptrace.Span_SPAN_KIND_CONSUMER
+			}
+			for _, link := range start.GetLinks() {
+				if link.GetType() == logspb.Link_CHILD_OF {
+					span.ParentSpanId = spanIDFrom(link.GetSpanContext().GetSpanId())
+					continue
+				}
+				span.Links = append(span.Links, &otlptrace.Span_Link{
+					TraceId:    link.GetSpanContext().GetTraceId(),
+					SpanId:     spanIDFrom(link.GetSpanContext().GetSpanId()),
+					Attributes: attributesFrom(link.GetAttributes()),
+				})
+			}
+			c.spans = append(c.spans, span)
+		}
+		if c.collectLogs {
+			sev, sevText := levelToSeverity(entry.GetLevel())
+			rec := &otlplogs.LogRecord{
+				TraceId:        tr.GetSpanContext().GetTraceId(),
+				SpanId:         spanIDFrom(tr.GetSpanContext().GetSpanId()),
+				TimeUnixNano:   uint64(entry.GetNanoTs()),
+				Body:           &otlpcommon.AnyValue{Value: &otlpcommon.AnyValue_StringValue{StringValue: entry.GetMessage()}},
+				SeverityNumber: sev,
+				SeverityText:   sevText,
+				Attributes:     attributesFrom(entry.GetAttributes()),
+			}
+			c.logs = append(c.logs, rec)
+		}
+		if lastTs := entry.GetNanoTs(); lastTs > c.lastTs {
+			c.lastTs = lastTs
+		}
+	}
+}
+
+func (c *collector) flush(ctx context.Context, e *Emitter) error {
+	var errs []error
+	if len(c.logs) > 0 {
+		req := &collogs.ExportLogsServiceRequest{
+			ResourceLogs: []*otlplogs.ResourceLogs{
+				{
+					Resource:  e.resource,
+					ScopeLogs: []*otlplogs.ScopeLogs{{LogRecords: c.logs}},
+				},
+			},
+		}
+		if err := e.send(ctx, e.LogsPath, req); err != nil {
+			errs = append(errs, err)
+		} else {
+			c.logs = nil
+		}
+	}
+	if len(c.spans) > 0 {
+		req := &coltrace.ExportTraceServiceRequest{
+			ResourceSpans: []*otlptrace.ResourceSpans{
+				{
+					Resource:   e.resource,
+					ScopeSpans: []*otlptrace.ScopeSpans{{Spans: c.spans}},
+				},
+			},
+		}
+		if err := e.send(ctx, e.TracePath, req); err != nil {
+			errs = append(errs, err)
+		} else {
+			c.spans = nil
+		}
+	}
+	return errors.Join(errs...)
+}
+
 type stream struct {
-	emitter *Emitter
-	records []*otlplogs.LogRecord
-	// acked is the last nanoTS confirmed delivered to the receiver.
-	acked int64
+	emitter   *Emitter
+	collector *collector
 }
 
 func (s *stream) StreamLogEntry(ctx context.Context, entry *logspb.LogEntry) error {
-	s.records = append(s.records, entryToLogRecord(entry))
-	if len(s.records) >= bulkThreshold {
-		return s.flush(ctx)
+	s.collector.collect(entry)
+	if len(s.collector.logs)+len(s.collector.spans) >= bulkThreshold {
+		return s.collector.flush(ctx, s.emitter)
 	}
 	return nil
 }
 
 func (s *stream) StreamEnd(ctx context.Context) (int64, error) {
-	if err := s.flush(ctx); err != nil {
-		return s.acked, err
+	if err := s.collector.flush(ctx, s.emitter); err != nil {
+		return s.collector.lastTs, err
 	}
-	return s.acked, nil
+	return s.collector.lastTs, nil
 }
 
-func (s *stream) flush(ctx context.Context) error {
-	if len(s.records) == 0 {
+func spanIDFrom(id uint64) []byte {
+	if id == 0 {
 		return nil
 	}
-	records := s.records
-	var lastTS int64
-	for _, r := range records {
-		if v := int64(r.GetTimeUnixNano()); v > lastTS {
-			lastTS = v
-		}
-	}
-	req := &cpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otlplogs.ResourceLogs{
-			{
-				Resource: &otlpresource.Resource{Attributes: s.emitter.resourceAttrs()},
-				ScopeLogs: []*otlplogs.ScopeLogs{
-					{LogRecords: records},
-				},
-			},
-		},
-	}
-	payload, err := proto.Marshal(req)
-	if err != nil {
-		return err
-	}
-	// Keep the records buffered until the receiver acknowledges them so they
-	// are not lost if the request fails.
-	if err := s.emitter.send(ctx, payload); err != nil {
-		if s.emitter.Verbose {
-			logs.Emergent().Error(err).PrintErr("OTLP flush: ")
-		}
-		return err
-	}
-	s.records = nil
-	if lastTS > s.acked {
-		s.acked = lastTS
-	}
-	return nil
-}
-
-// entryToLogRecord converts a logs.LogEntry into an OTLP LogRecord.
-func entryToLogRecord(entry *logspb.LogEntry) *otlplogs.LogRecord {
-	sev, sevText := levelToSeverity(entry.GetLevel())
-	rec := &otlplogs.LogRecord{
-		TimeUnixNano:   uint64(entry.GetNanoTs()),
-		Body:           &otlpcommon.AnyValue{Value: &otlpcommon.AnyValue_StringValue{StringValue: entry.GetMessage()}},
-		SeverityNumber: sev,
-		SeverityText:   sevText,
-		Attributes:     attributesFrom(entry.GetAttributes()),
-	}
-	if tr := entry.GetTrace(); tr != nil {
-		if tid := tr.GetSpanContext().GetTraceId(); len(tid) >= 16 {
-			rec.TraceId = tid
-		}
-		if sid := tr.GetSpanContext().GetSpanId(); sid != 0 {
-			rec.SpanId = make([]byte, 8)
-			for i := 0; i < 8; i++ {
-				rec.SpanId[i] = byte(sid >> (8 * (7 - i)))
-			}
-		}
-	}
-	return rec
+	out := make([]byte, 8)
+	binary.Encode(out, binary.BigEndian, id)
+	return out
 }
 
 // levelToSeverity maps a logs.Level to an OTLP SeverityNumber and severity text.
@@ -272,7 +348,9 @@ func levelToSeverity(l logspb.LogEntry_Level) (otlplogs.SeverityNumber, string) 
 		return otlplogs.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN"
 	case logspb.LogEntry_ERROR:
 		return otlplogs.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR"
-	case logspb.LogEntry_CRITICAL, logspb.LogEntry_FATAL:
+	case logspb.LogEntry_CRITICAL:
+		return otlplogs.SeverityNumber_SEVERITY_NUMBER_ERROR3, "CRITICAL"
+	case logspb.LogEntry_FATAL:
 		return otlplogs.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL"
 	default:
 		return otlplogs.SeverityNumber_SEVERITY_NUMBER_UNSPECIFIED, ""

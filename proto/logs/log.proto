@@ -30,6 +30,8 @@ message Trace {
     }
 
     message SpanEnd {
+        SpanStart start = 1;
+        int64 start_ns = 2;
     }
 
     SpanContext span_context = 1;
